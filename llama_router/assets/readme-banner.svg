@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-labelledby="title desc">
+  <title id="title">Llama Router</title>
+  <desc id="desc">Llama Router banner with the idle server pulse mark in the centre.</desc>
+  <style>
+    .wifi-wave { animation: wifi-pulse 960ms ease-in-out infinite; }
+    .wifi-wave.wave-1 { animation-delay: -720ms; }
+    .wifi-wave.wave-2 { animation-delay: -480ms; }
+    .wifi-wave.wave-3 { animation-delay: -240ms; }
+    @keyframes wifi-pulse {
+      0%, 24% { opacity: .22; }
+      25%, 49% { opacity: 1; }
+      50%, 74% { opacity: .48; }
+      75%, 100% { opacity: .22; }
+    }
+  </style>
+  <rect width="1200" height="320" rx="18" fill="#070b12"/>
+  <g transform="translate(495 42) scale(.36)" stroke-linecap="butt">
+    <path d="M145 175 165 255 135 255Z M205 165 225 245 195 245Z M135 255 250 245 310 295 310 335 235 335 235 415 165 415 165 305 135 285Z" fill="#3fd7e6"/>
+    <circle cx="252.5" cy="277.5" r="7.5" fill="#070b12"/>
+    <circle cx="291" cy="241" r="6" fill="#74e8f4"/>
+    <path class="wifi-wave wave-0" d="M330 250 A50 50 0 0 0 292.941 201.704" fill="none" stroke="#3fd7e6" stroke-width="8"/>
+    <path class="wifi-wave wave-1" d="M370 250 A90 90 0 0 0 303.293 163.067" fill="none" stroke="#3fd7e6" stroke-width="8"/>
+    <path class="wifi-wave wave-2" d="M410 250 A130 130 0 0 0 313.646 124.434" fill="none" stroke="#3fd7e6" stroke-width="8"/>
+    <path class="wifi-wave wave-3" d="M450 250 A170 170 0 0 0 323.999 85.778" fill="none" stroke="#3fd7e6" stroke-width="7"/>
+  </g>
+  <text x="600" y="232" fill="#d4e0ec" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="28" text-anchor="middle" letter-spacing="5">LLAMA ROUTER</text>
+  <text x="600" y="266" fill="#6c8095" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" text-anchor="middle" letter-spacing="2">SERVER IDLE · READY TO START</text>
+</svg>

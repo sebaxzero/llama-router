@@ -1,0 +1,16 @@
+# Text files - CRLF normalization on checkout, LF everywhere else
+* text=auto
+
+# Python files
+*.py text eol=lf
+
+# Markdown
+*.md text eol=lf diff=markdown
+
+# Batch scripts
+*.bat text eol=crlf
+
+# Config files
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf

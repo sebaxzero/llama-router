@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "presets": [
+    {
+      "id": "qwen3-thinking",
+      "name": "Qwen3 (thinking)",
+      "match": ["qwen3", "qwq"],
+      "params": { "temp": 0.6, "top-p": 0.95, "top-k": 20, "min-p": 0.0, "presence-penalty": 0.0, "repeat-penalty": 1.0 }
+    },
+    {
+      "id": "qwen3-instruct",
+      "name": "Qwen3 (instruct)",
+      "match": ["qwen"],
+      "params": { "temp": 0.7, "top-p": 0.8, "top-k": 20, "min-p": 0.0 }
+    },
+    {
+      "id": "gemma3",
+      "name": "Gemma 3",
+      "match": ["gemma"],
+      "params": { "temp": 1.0, "top-p": 0.95, "top-k": 64 }
+    },
+    {
+      "id": "llama3",
+      "name": "Llama 3.x",
+      "match": ["llama-3", "llama3"],
+      "params": { "temp": 0.6, "top-p": 0.9 }
+    },
+    {
+      "id": "deepseek-r1",
+      "name": "DeepSeek-R1",
+      "match": ["deepseek-r1", "r1-distill"],
+      "params": { "temp": 0.6, "top-p": 0.95 }
+    },
+    {
+      "id": "mistral-small",
+      "name": "Mistral Small",
+      "match": ["mistral", "ministral"],
+      "params": { "temp": 0.15 }
+    },
+    {
+      "id": "gpt-oss",
+      "name": "GPT-OSS",
+      "match": ["gpt-oss"],
+      "params": { "temp": 1.0, "top-p": 1.0, "top-k": 0 }
+    }
+  ]
+}

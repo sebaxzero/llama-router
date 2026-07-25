@@ -1,0 +1,36 @@
+# Logs
+logs/
+*.log
+
+# Runtime
+runtime/
+*.pyc
+__pycache__/
+
+# Models
+models/
+
+# Config (generated or local secrets)
+config/
+
+# Local tests
+tools/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# PyInstaller (tools/build.py)
+*.spec
+llama-router.base
+
+# Python
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+
+# agents
+AGENTS.md
+
