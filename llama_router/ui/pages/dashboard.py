@@ -177,7 +177,7 @@ class DashboardPage(Page):
         self._ram_bar, self._ram_val = self._meter_row(self._sys_card, "RAM")
 
         self._gpu_card = tk.Frame(self._usage_row, bg=c["surface"])
-        self._gpu_card.grid(row=0, column=1, sticky="ew")
+        self._gpu_card.grid(row=0, column=1, sticky="nsew")
         section_label(self._gpu_card, c, "GPU").pack(anchor="w")
         self._gpu_box = tk.Frame(self._gpu_card, bg=c["surface"])
         self._gpu_box.pack(fill="x")
@@ -379,11 +379,15 @@ class DashboardPage(Page):
         if width < 900:
             self._sys_card.grid_configure(row=0, column=0, columnspan=2,
                                           padx=0, pady=(0, 8))
-            self._gpu_card.grid_configure(row=1, column=0, columnspan=2)
+            # Explicitly clear the side-by-side padding.  Monitor updates can
+            # arrive before this layout pass and must not leave GPU indented.
+            self._gpu_card.grid_configure(row=1, column=0, columnspan=2,
+                                          padx=0, pady=0)
         else:
             self._sys_card.grid_configure(row=0, column=0, columnspan=1,
                                           padx=(0, 16), pady=0)
-            self._gpu_card.grid_configure(row=0, column=1, columnspan=1)
+            self._gpu_card.grid_configure(row=0, column=1, columnspan=1,
+                                          padx=0, pady=0)
 
     def _toggle_inventory(self) -> None:
         self._inventory_open = not self._inventory_open
@@ -786,7 +790,8 @@ class DashboardPage(Page):
 
     def _on_system(self, d: dict) -> None:
         if not self._sys_card.winfo_ismapped():
-            self._sys_card.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
+            self._sys_card.grid(row=0, column=0, sticky="nsew")
+            self._relayout_usage()
         self._cpu_bar.set(d["cpu"] / 100)
         self._cpu_val.configure(text=f"{d['cpu']:5.1f}%")
         total = max(1, d["mem_total"])
@@ -797,7 +802,8 @@ class DashboardPage(Page):
     def _on_gpu(self, gpus: list[dict]) -> None:
         c = self.c
         if not self._gpu_card.winfo_ismapped():
-            self._gpu_card.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
+            self._gpu_card.grid(row=0, column=1, sticky="nsew")
+            self._relayout_usage()
         # (Re)build rows if GPU count changed
         if len(self._gpu_rows) != len(gpus):
             for w in self._gpu_box.winfo_children():
