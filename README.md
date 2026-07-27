@@ -13,10 +13,6 @@
   Manage local GGUF models with a native Python + Tkinter application.
 </p>
 
-Run `python main.py` and configure `llama-server` visually.
-
-![Dashboard](llama_router/assets/screenshots/page_dashboard.png)
-
 ## What you can do
 
 - **Install runtimes**, download prebuilt `llama-server` binaries (CUDA, Vulkan, CPU) or import one you already compiled.

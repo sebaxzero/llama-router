@@ -10,7 +10,7 @@ from llama_router.core.utils import fmt_bytes
 from llama_router.i18n import t
 from llama_router.ui import theme
 from llama_router.ui.pages.base import PAGE_PAD, Page
-from llama_router.ui.widgets import (PillButton, ScrollFrame, section_label,
+from llama_router.ui.widgets import (CollapsibleCard, PillButton, ScrollFrame,
                                     enable_row_hover)
 
 
@@ -31,18 +31,15 @@ class RuntimePage(Page):
         content = scroll.body
 
         # ── Installed ────────────────────────────────────────────────────────
-        inst_panel = tk.Frame(content, bg=c["surface"],
-                              highlightbackground=c["border"],
-                              highlightthickness=1)
-        inst_panel.pack(fill="both", expand=True, padx=PAGE_PAD, pady=(0, 12))
-        inst_head = tk.Frame(inst_panel, bg=c["surface"])
-        inst_head.pack(fill="x", padx=14, pady=(10, 4))
-        section_label(inst_head, c, t("Installed")).pack(side="left")
-        self._activate_btn = PillButton(inst_head, c, t("Use this runtime"),
+        inst_card = CollapsibleCard(content, c, t("Installed"), pad=14,
+                                    state_key="runtime.installed")
+        inst_card.pack(fill="x", padx=PAGE_PAD, pady=(0, 12))
+        inst_panel = inst_card.content
+        self._activate_btn = PillButton(inst_card.header, c, t("Use this runtime"),
                                         kind="primary", size=9, padx=12,
                                         height=28, command=self._activate)
-        self._activate_btn.pack(side="right")
-        self._delete_btn = PillButton(inst_head, c, t("Delete"), size=9,
+        self._activate_btn.pack(side="right", padx=(0, 6))
+        self._delete_btn = PillButton(inst_card.header, c, t("Delete"), size=9,
                                       padx=12, height=28, command=self._delete)
         self._delete_btn.pack(side="right", padx=(0, 8))
 
@@ -66,19 +63,16 @@ class RuntimePage(Page):
                                     font=theme.ui(9))
 
         # ── Releases ─────────────────────────────────────────────────────────
-        rel_panel = tk.Frame(content, bg=c["surface"],
-                             highlightbackground=c["border"],
-                             highlightthickness=1)
-        rel_panel.pack(fill="both", expand=True, padx=PAGE_PAD, pady=(0, 12))
-        rel_head = tk.Frame(rel_panel, bg=c["surface"])
-        rel_head.pack(fill="x", padx=14, pady=(10, 4))
-        section_label(rel_head, c, t("Available releases")).pack(side="left")
-        self._release_cb = ttk.Combobox(rel_head, state="readonly", width=28,
+        rel_card = CollapsibleCard(content, c, t("Available releases"), pad=14,
+                                   state_key="runtime.releases")
+        rel_card.pack(fill="x", padx=PAGE_PAD, pady=(0, 12))
+        rel_panel = rel_card.content
+        self._release_cb = ttk.Combobox(rel_card.header, state="readonly", width=28,
                                         font=theme.mono(9))
         self._release_cb.pack(side="left", padx=(14, 0))
         self._release_cb.bind("<<ComboboxSelected>>",
                               lambda e: self._show_assets())
-        self._dl_btn = PillButton(rel_head, c, t("Download & install"),
+        self._dl_btn = PillButton(rel_card.header, c, t("Download & install"),
                                   kind="primary", size=9, padx=12, height=28,
                                   command=self._install)
         self._dl_btn.pack(side="right")

@@ -11,6 +11,7 @@ vertically on narrow windows.
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -18,7 +19,7 @@ from tkinter import filedialog, messagebox, ttk
 from llama_router.i18n import t
 from llama_router.ui import theme
 from llama_router.ui.pages.base import PAGE_PAD, Page
-from llama_router.ui.widgets import (Card, PillButton, ScrollFrame, StatusDot,
+from llama_router.ui.widgets import (Card, CollapsibleCard, PillButton, ScrollFrame, StatusDot,
                                     fmt_uptime, key_value, section_label,
                                     status_label)
 
@@ -61,11 +62,18 @@ class DashboardPage(Page):
     def __init__(self, parent: tk.Widget, ctx) -> None:
         super().__init__(parent, ctx)
         c = self.c
-        self.header(t("panel"), t("Dashboard"), t("Router status and first steps"))
+        head = self.header(t("panel"), t("Dashboard"),
+                           t("Router status and first steps"))
+        head.actions.pack_configure(anchor="n", pady=(15, 0))
+
+        # Live resource meters stay in the fixed portion with server state.
+        self._fixed_usage = fixed_usage = tk.Frame(self, bg=c["bg"])
+        # Match the scroll canvas width when its vertical scrollbar is shown.
+        fixed_usage.pack(fill="x", padx=(PAGE_PAD, PAGE_PAD + 12), pady=(0, 10))
 
         # Scroll container: keeps the entire dashboard reachable on short
         # windows instead of clipping the lower cards.
-        self._scroll = ScrollFrame(self, c)
+        self._scroll = ScrollFrame(self, c, fill_height=True)
         self._scroll.pack(fill="both", expand=True)
         body = self._scroll.body
 
@@ -103,13 +111,22 @@ class DashboardPage(Page):
         self._reason = tk.Label(hero.body, text="", bg=c["surface"],
                                 fg=c["warn"], font=theme.ui(9), anchor="w",
                                 justify="left")
-        tk.Label(hero.body, text=t("Launch command").upper(), bg=c["surface"],
-                 fg=c["faint"], font=theme.mono(8, "bold")).pack(
-                     anchor="w", pady=(12, 4))
-        self._cmd = tk.Label(hero.body, text="—", bg=c["inset"], fg=c["muted"],
-                             font=theme.mono(8), anchor="w", justify="left",
-                             padx=10, pady=6)
-        self._cmd.pack(fill="x")
+        cmd_head = tk.Frame(hero.body, bg=c["surface"])
+        cmd_head.pack(fill="x", pady=(12, 4))
+        tk.Label(cmd_head, text=t("Launch command").upper(), bg=c["surface"],
+                 fg=c["faint"], font=theme.mono(8, "bold")).pack(side="left")
+        self._launch_cmd: list[str] = []
+        cmd_box = tk.Frame(hero.body, bg=c["inset"])
+        cmd_box.pack(fill="x")
+        self._cmd_copy = PillButton(cmd_box, c, t("Copy"), size=8, padx=9,
+                                    height=24, command=self._copy_launch_cmd)
+        self._cmd_copy.pack(side="right", padx=4, pady=4, anchor="n")
+        self._cmd_copy.set_enabled(False)
+        self._cmd = tk.Text(cmd_box, height=1, bg=c["inset"], fg=c["muted"],
+                            bd=0, padx=10, pady=6, font=theme.mono(8),
+                            wrap="word", state="disabled", takefocus=False,
+                            highlightthickness=0)
+        self._cmd.pack(side="left", fill="x", expand=True)
 
         details = tk.Frame(body, bg=c["bg"])
         details.pack(fill="x", padx=PAGE_PAD, pady=(10, 0))
@@ -130,57 +147,63 @@ class DashboardPage(Page):
         # ── Client connection ───────────────────────────────────────────────
         # This card stays full-width.  Examples can be long, so sharing its
         # row with the optional inventory would make both cards cramped.
-        ep = Card(body, c)
+        ep = CollapsibleCard(body, c, t("Connect your client"),
+                             state_key="dashboard.client")
         ep.pack(fill="x", padx=PAGE_PAD, pady=(14, 0))
-        ep_row = tk.Frame(ep.body, bg=c["surface"])
-        ep_row.pack(fill="x")
-        tk.Label(ep_row, text=t("Connect your client").upper(),
-                 bg=c["surface"], fg=c["faint"],
-                 font=theme.mono(8, "bold")).pack(side="left", padx=(0, 12))
-        self._examples_btn = PillButton(ep_row, c, t("Examples"),
+        self._examples_btn = PillButton(ep.header, c, t("Examples"),
                                         command=self._toggle_client_examples,
                                         size=9, padx=14, height=30)
-        self._examples_btn.pack(side="right")
-        self._endpoint_rows = tk.Frame(ep.body, bg=c["surface"])
-        self._endpoint_rows.pack(fill="x", pady=(10, 0))
-        self._client_examples_box = tk.Frame(ep.body, bg=c["surface"])
+        self._examples_btn.pack(side="right", padx=(0, 6))
+        self._endpoint_rows = tk.Frame(ep.content, bg=c["surface"])
+        self._endpoint_rows.pack(fill="x")
+        self._client_examples_box = tk.Frame(ep.content, bg=c["surface"])
         self._examples_open = False
         self._render_endpoints()
 
         self._ep = ep
 
-        # ── System (CPU / RAM) ───────────────────────────────────────────────
-        self._usage_row = tk.Frame(body, bg=c["bg"])
-        self._usage_row.pack(fill="x", padx=PAGE_PAD, pady=(14, 0))
+        # ── Live resource strip ──────────────────────────────────────────────
+        usage = Card(fixed_usage, c)
+        usage.pack(fill="x")
+        self._usage_row = tk.Frame(usage.body, bg=c["surface"])
+        self._usage_row.pack(fill="x")
         self._usage_row.columnconfigure(0, weight=1, uniform="usage")
         self._usage_row.columnconfigure(1, weight=1, uniform="usage")
-        self._sys_card = Card(self._usage_row, c)
-        tk.Label(self._sys_card.body, text=t("System").upper(), bg=c["surface"],
-                 fg=c["faint"], font=theme.mono(8, "bold")).pack(anchor="w")
-        sys_box = tk.Frame(self._sys_card.body, bg=c["surface"])
-        sys_box.pack(fill="x", pady=(8, 0))
-        self._cpu_bar, self._cpu_val = self._meter_row(sys_box, "CPU")
-        self._ram_bar, self._ram_val = self._meter_row(sys_box, "RAM")
 
-        # ── GPU ──────────────────────────────────────────────────────────────
-        self._gpu_card = Card(self._usage_row, c)
-        tk.Label(self._gpu_card.body, text="GPU", bg=c["surface"],
-                 fg=c["faint"], font=theme.mono(8, "bold")).pack(anchor="w")
-        self._gpu_box = tk.Frame(self._gpu_card.body, bg=c["surface"])
-        self._gpu_box.pack(fill="x", pady=(8, 0))
+        self._sys_card = tk.Frame(self._usage_row, bg=c["surface"])
+        self._sys_card.grid(row=0, column=0, sticky="ew", padx=(0, 16))
+        section_label(self._sys_card, c, t("System")).pack(anchor="w")
+        self._cpu_bar, self._cpu_val = self._meter_row(self._sys_card, "CPU")
+        self._ram_bar, self._ram_val = self._meter_row(self._sys_card, "RAM")
+
+        self._gpu_card = tk.Frame(self._usage_row, bg=c["surface"])
+        self._gpu_card.grid(row=0, column=1, sticky="ew")
+        section_label(self._gpu_card, c, "GPU").pack(anchor="w")
+        self._gpu_box = tk.Frame(self._gpu_card, bg=c["surface"])
+        self._gpu_box.pack(fill="x")
         self._gpu_rows: list[tuple] = []
+        self._usage_row.bind("<Configure>", self._relayout_usage, add="+")
+        self.after_idle(lambda: self._relayout_usage())
 
         # ── Optional guidance: first steps + inventory ───────────────────────
         self._guidance_row = tk.Frame(body, bg=c["bg"])
         self._guidance_row.columnconfigure(0, weight=1, uniform="guidance")
         self._guidance_row.columnconfigure(1, weight=1, uniform="guidance")
 
+        self._steps_card_open = bool(
+            ctx.collapsible_states.get("dashboard.first_steps", True))
         steps = Card(self._guidance_row, c)
         self._steps_card_w = steps
-        tk.Label(steps.body, text=t("First steps").upper(), bg=c["surface"],
-                 fg=c["faint"], font=theme.mono(8, "bold")).pack(anchor="w")
+        steps_head = tk.Frame(steps.body, bg=c["surface"])
+        steps_head.pack(fill="x")
+        section_label(steps_head, c, t("First steps")).pack(side="left")
+        self._steps_toggle = PillButton(
+            steps_head, c, "▾" if self._steps_card_open else "▸", size=9, padx=7,
+                                        height=26, command=self._toggle_steps_card)
+        self._steps_toggle.pack(side="right")
         self._steps_box = tk.Frame(steps.body, bg=c["surface"])
-        self._steps_box.pack(fill="x", pady=(10, 0))
+        if self._steps_card_open:
+            self._steps_box.pack(fill="x", pady=(10, 0))
         self._render_steps()
 
         summary = Card(self._guidance_row, c)
@@ -191,12 +214,15 @@ class DashboardPage(Page):
         self._summary = summary
         self._refresh_summary()
 
-        self._logpanel = tk.Frame(body, bg=c["surface"],
-                                  highlightbackground=c["border"],
-                                  highlightthickness=1)
-        logbar = tk.Frame(self._logpanel, bg=c["surface"])
-        logbar.pack(fill="x", padx=12, pady=(8, 4))
-        section_label(logbar, c, t("Logs")).pack(side="left")
+        self._logpanel = Card(body, c)
+        logbar = tk.Frame(self._logpanel.body, bg=c["surface"])
+        self._logbar = logbar
+        logbar.pack(fill="x")
+        self._logs_title = section_label(logbar, c, t("Logs"))
+        self._logs_title.pack(side="left")
+        self._logs_toggle = PillButton(logbar, c, "▸", size=9, padx=7,
+                                       height=26, command=self._toggle_logs)
+        self._logs_toggle.pack(side="right")
         self._src = ttk.Combobox(
             logbar, state="readonly", width=12, font=theme.ui(9),
             values=[t("All"), "server", "app", "downloads"])
@@ -213,12 +239,13 @@ class DashboardPage(Page):
         ttk.Checkbutton(logbar, text=t("Follow"), variable=self._follow,
                         takefocus=False).pack(side="right", padx=(0, 10))
         self._log_text = tk.Text(
-            self._logpanel, height=10, bg=c["inset"], fg=c["text"], bd=0,
+            self._logpanel.body, height=10, bg=c["inset"], fg=c["text"], bd=0,
             padx=10, pady=8, font=theme.mono(8), wrap="none", state="disabled",
             highlightthickness=0)
-        logscroll = ttk.Scrollbar(self._logpanel, orient="vertical",
+        logscroll = ttk.Scrollbar(self._logpanel.body, orient="vertical",
                                   command=self._log_text.yview)
         self._log_text.configure(yscrollcommand=logscroll.set)
+        self._logscroll = logscroll
         # ScrollFrame listens globally to the wheel.  Handle it here first so
         # the cursor over the log moves the log, rather than the dashboard.
         self._log_text.bind("<MouseWheel>", self._scroll_logs)
@@ -233,6 +260,69 @@ class DashboardPage(Page):
             self._log_text.tag_configure("source:" + source,
                                          foreground=c[token])
         self._reload_logs()
+
+        # Recompose the dashboard body in operational order.  The original
+        # hero is retained only while constructing its widgets above; all live
+        # controls are moved into the fixed page header below.
+        hero.pack_forget()
+        details.pack_forget()
+        ep.pack_forget()
+
+        fixed = tk.Frame(head.actions, bg=c["bg"])
+        fixed.pack()
+        self._dot = StatusDot(fixed, c, size=16)
+        self._dot.configure(bg=c["bg"])
+        self._dot.pack(side="left")
+        self._status_lbl = tk.Label(fixed, text=theme.track(t("Stopped")),
+                                    bg=c["bg"], fg=c["text"],
+                                    font=theme.mono(10, "bold"))
+        self._status_lbl.pack(side="left", padx=(7, 0))
+        self._uptime_lbl = tk.Label(fixed, text="", bg=c["bg"],
+                                    fg=c["muted"], font=theme.mono(8))
+        self._uptime_lbl.pack(side="left", padx=(7, 10))
+        self._start_btn = PillButton(fixed, c, t("Start server"),
+                                     kind="primary", size=9, padx=16,
+                                     height=30, command=self._start)
+        self._start_btn.pack(side="left")
+        self._restart_btn = PillButton(fixed, c, t("Restart"), size=9,
+                                       padx=14, height=30, command=self._restart)
+        self._restart_btn.pack(side="left", padx=(6, 0))
+        self._inventory_line = tk.Label(
+            head.actions, text="", bg=c["bg"], fg=c["faint"],
+            font=theme.mono(8), anchor="e")
+        self._inventory_line.pack(anchor="e", pady=(3, 0))
+        self._refresh_summary()
+
+        # Resource use is fixed above; Logs itself owns its disclosure control.
+        self._logpanel.pack(fill="x", padx=PAGE_PAD, pady=(14, 0))
+        self._set_logs_open(bool(
+            ctx.collapsible_states.get("dashboard.logs", False)))
+
+        ep.pack(fill="x", padx=PAGE_PAD, pady=(14, 0))
+        launch = CollapsibleCard(body, c, t("Launch command"),
+                                 state_key="dashboard.launch")
+        launch.pack(fill="x", padx=PAGE_PAD, pady=(14, 0))
+        self._launch_card = launch
+        self._launch_cmd = []
+        cmd_box = tk.Frame(launch.content, bg=c["inset"])
+        self._cmd_box = cmd_box
+        cmd_box.pack(fill="x")
+        self._cmd_copy = PillButton(cmd_box, c, t("Copy"), size=8, padx=9,
+                                    height=24, command=self._copy_launch_cmd)
+        self._cmd_copy.pack(side="right", padx=4, pady=4, anchor="n")
+        self._cmd_copy.set_enabled(False)
+        self._cmd = tk.Text(cmd_box, height=1, bg=c["inset"], fg=c["muted"],
+                            bd=0, padx=10, pady=6, font=theme.mono(8),
+                            wrap="word", state="disabled", takefocus=False,
+                            highlightthickness=0)
+        self._cmd.pack(side="left", fill="x", expand=True)
+
+        # Inventory and First steps are always visible at the end of the
+        # scrollable content, no longer controlled by separate disclosure
+        # buttons.
+        self._inventory_open = False
+        self._steps_open = True
+        self._guidance_row.pack(fill="x", padx=PAGE_PAD, pady=(14, PAGE_PAD))
 
         # Responsive row layout: side-by-side when wide, stacked when narrow.
         self._relayout_dash(self.winfo_width())
@@ -257,20 +347,15 @@ class DashboardPage(Page):
     # ── Responsive ───────────────────────────────────────────────────────────
 
     def _relayout_dash(self, w: int) -> None:
+        self._align_fixed_usage()
         if not getattr(self, "_guidance_row", None):
             return
         self._summary.grid_forget()
         self._steps_card_w.grid_forget()
         if not (self._inventory_open or self._steps_open):
             self._guidance_row.pack_forget()
-        else:
-            pack_opts = {"fill": "x", "padx": PAGE_PAD, "pady": (14, 0)}
-            # Tk only accepts ``before`` for a sibling already managed by
-            # pack.  Logs starts collapsed, so it cannot be the target until
-            # the user has opened it.
-            if self._logpanel.winfo_ismapped():
-                pack_opts["before"] = self._logpanel
-            self._guidance_row.pack(**pack_opts)
+        elif not self._guidance_row.winfo_ismapped():
+            self._guidance_row.pack(fill="x", padx=PAGE_PAD, pady=(14, PAGE_PAD))
         if self._inventory_open and self._steps_open and w >= 720:
             self._summary.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
             self._steps_card_w.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
@@ -282,6 +367,23 @@ class DashboardPage(Page):
             self._summary.grid(row=0, column=0, columnspan=2, sticky="ew")
         else:
             self._steps_card_w.grid(row=0, column=0, columnspan=2, sticky="ew")
+
+    def _align_fixed_usage(self) -> None:
+        """Match the scroll body's right edge with or without its scrollbar."""
+        gutter = 12 if self._scroll._vbar.winfo_ismapped() else 0
+        self._fixed_usage.pack_configure(padx=(PAGE_PAD, PAGE_PAD + gutter))
+
+    def _relayout_usage(self, event=None) -> None:
+        """Keep CPU/RAM visible when the fixed resource strip narrows."""
+        width = event.width if event is not None else self._usage_row.winfo_width()
+        if width < 900:
+            self._sys_card.grid_configure(row=0, column=0, columnspan=2,
+                                          padx=0, pady=(0, 8))
+            self._gpu_card.grid_configure(row=1, column=0, columnspan=2)
+        else:
+            self._sys_card.grid_configure(row=0, column=0, columnspan=1,
+                                          padx=(0, 16), pady=0)
+            self._gpu_card.grid_configure(row=0, column=1, columnspan=1)
 
     def _toggle_inventory(self) -> None:
         self._inventory_open = not self._inventory_open
@@ -296,15 +398,43 @@ class DashboardPage(Page):
         self._relayout_dash(self._scroll.winfo_width())
 
     def _toggle_logs(self) -> None:
-        self._logs_open = not self._logs_open
-        self._logs_btn.set_text(
-            ("▴ " if self._logs_open else "▾ ") + t("Logs"))
-        if self._logs_open:
+        self._set_logs_open(not self._logs_open)
+
+    def _set_logs_open(self, open_: bool) -> None:
+        self._logs_open = open_
+        self.ctx.collapsible_states["dashboard.logs"] = open_
+        self._logs_toggle.set_text("▾" if open_ else "▸")
+        if open_:
             self._reload_logs()
-            self._logpanel.pack(fill="both", expand=True, padx=PAGE_PAD,
-                                pady=(14, PAGE_PAD))
+            for child in self._logbar.pack_slaves():
+                if child not in (self._logs_title, self._logs_toggle, self._src):
+                    child.pack(side="right", padx=(0, 6))
+            self._src.pack(side="left", padx=(12, 0))
+            self._logscroll.pack(side="right", fill="y")
+            self._log_text.pack(fill="both", expand=True, padx=1, pady=(0, 1))
         else:
-            self._logpanel.pack_forget()
+            for child in self._logbar.pack_slaves():
+                if child not in (self._logs_title, self._logs_toggle):
+                    child.pack_forget()
+            self._src.pack_forget()
+            self._logscroll.pack_forget()
+            self._log_text.pack_forget()
+        self._refresh_dashboard_scroll()
+
+    def _toggle_steps_card(self) -> None:
+        self._steps_card_open = not self._steps_card_open
+        self.ctx.collapsible_states["dashboard.first_steps"] = \
+            self._steps_card_open
+        self._steps_toggle.set_text("▾" if self._steps_card_open else "▸")
+        if self._steps_card_open:
+            self._steps_box.pack(fill="x", pady=(10, 0))
+        else:
+            self._steps_box.pack_forget()
+        self._refresh_dashboard_scroll()
+
+    def _refresh_dashboard_scroll(self) -> None:
+        """Refresh a fill-height ScrollFrame after a child is collapsed."""
+        self.after_idle(lambda: self._scroll._on_body(None))
 
     # ── Data ─────────────────────────────────────────────────────────────────
 
@@ -347,12 +477,14 @@ class DashboardPage(Page):
             tk.Label(row, text=name, width=13, anchor="w",
                      bg=self.c["surface"], fg=self.c["muted"],
                      font=theme.ui(9, "bold")).pack(side="left")
-            tk.Label(row, text=url, anchor="w", bg=self.c["inset"],
+            value_box = tk.Frame(row, bg=self.c["inset"])
+            value_box.pack(side="left", fill="x", expand=True)
+            tk.Label(value_box, text=url, anchor="w", bg=self.c["inset"],
                      fg=self.c["accent"], font=theme.mono(9), padx=8,
                      pady=5).pack(side="left", fill="x", expand=True)
-            PillButton(row, self.c, t("Copy"), size=8, padx=9, height=26,
-                        command=lambda value=url: self._copy_value(value)).pack(
-                            side="left", padx=(6, 0))
+            PillButton(value_box, self.c, t("Copy"), size=8, padx=9, height=24,
+                       command=lambda value=url: self._copy_value(value)).pack(
+                           side="right", padx=4, pady=3)
         cfg = self._config()
         api_key = cfg.server.api_key if cfg else ""
         key_row = tk.Frame(self._endpoint_rows, bg=self.c["surface"])
@@ -362,13 +494,15 @@ class DashboardPage(Page):
                  font=theme.ui(9, "bold")).pack(side="left")
         if api_key:
             key_text = api_key if cfg.show_api_details else t("Configured (hidden)")
-            tk.Label(key_row, text=key_text, anchor="w",
+            value_box = tk.Frame(key_row, bg=self.c["inset"])
+            value_box.pack(side="left", fill="x", expand=True)
+            tk.Label(value_box, text=key_text, anchor="w",
                      bg=self.c["inset"], fg=self.c["accent"],
                      font=theme.mono(9), padx=8, pady=5).pack(
                          side="left", fill="x", expand=True)
-            PillButton(key_row, self.c, t("Copy"), size=8, padx=9, height=26,
+            PillButton(value_box, self.c, t("Copy"), size=8, padx=9, height=24,
                        command=lambda value=api_key: self._copy_value(value)).pack(
-                           side="left", padx=(6, 0))
+                           side="right", padx=4, pady=3)
         else:
             tk.Label(key_row, text=t("Not configured"), anchor="w",
                      bg=self.c["inset"], fg=self.c["faint"],
@@ -397,6 +531,7 @@ class DashboardPage(Page):
         else:
             self._client_examples_box.pack_forget()
             self._examples_btn.set_text(t("Examples"))
+        self._refresh_dashboard_scroll()
 
     def _render_client_examples(self) -> None:
         for widget in self._client_examples_box.winfo_children():
@@ -404,25 +539,46 @@ class DashboardPage(Page):
         for label, example in self._client_examples().items():
             example_box = tk.Frame(self._client_examples_box, bg=self.c["surface"])
             example_box.pack(fill="x", pady=(0, 8))
-            heading = tk.Frame(example_box, bg=self.c["surface"])
-            heading.pack(fill="x", pady=(0, 3))
-            tk.Label(heading, text=label.upper(), bg=self.c["surface"],
+            code_box = tk.Frame(example_box, bg=self.c["inset"])
+            code_box.pack(fill="x")
+            heading = tk.Frame(code_box, bg=self.c["inset"])
+            heading.pack(fill="x", padx=(8, 4), pady=(3, 0))
+            tk.Label(heading, text=label.upper(), bg=self.c["inset"],
                      fg=self.c["faint"], font=theme.mono(8, "bold")).pack(
                          side="left")
             PillButton(heading, self.c, t("Copy"), size=8, padx=9, height=24,
-                       command=lambda value=example: self._copy_value(value)).pack(
-                           side="right")
+                        command=lambda value=example: self._copy_value(value)).pack(
+                            side="right")
             # Shell examples are compact but wrap on a narrow card; SDK
             # examples need one row per source line so their tail never ends
             # up behind the Text widget's own viewport.
             code_rows = max(3, example.count("\n") + 1)
-            code = tk.Text(example_box, height=code_rows, bg=self.c["inset"],
+            code = tk.Text(code_box, height=code_rows, bg=self.c["inset"],
                            fg=self.c["text"], bd=0, padx=10, pady=8,
                            font=theme.mono(8), wrap="word",
                            insertbackground=self.c["text"])
             code.insert("1.0", example)
+            self._highlight_code(code, example)
             code.configure(state="disabled")
-            code.pack(fill="x")
+            code.pack(fill="x", padx=1, pady=(0, 1))
+
+    def _highlight_code(self, widget: tk.Text, text: str) -> None:
+        """Apply a small, theme-aware syntax palette to dashboard snippets."""
+        for name, color in (("keyword", self.c["accent"]),
+                            ("function", self.c["ok"]),
+                            ("string", self.c["request"]),
+                            ("flag", self.c["accent"])):
+            widget.tag_configure(name, foreground=color)
+        patterns = (
+            ("keyword", r"\b(?:from|import|const|new|await|return)\b"),
+            ("function", r"\b(?:curl|OpenAI|print|console\.log|chat\.completions\.create)\b"),
+            ("string", r'"[^"\n]*"|\'[^\'\n]*\''),
+            ("flag", r"--[a-z0-9-]+"),
+        )
+        for tag, pattern in patterns:
+            for match in re.finditer(pattern, text):
+                widget.tag_add(tag, f"1.0+{match.start()}c",
+                               f"1.0+{match.end()}c")
 
     def _client_examples(self) -> dict[str, str]:
         base, model = self._base_url(), self._model_alias()
@@ -516,9 +672,14 @@ class DashboardPage(Page):
 
     def _refresh_summary(self) -> None:
         c = self.c
+        n_models, n_rt, active_rt = self._counts()
+        if hasattr(self, "_inventory_line"):
+            self._inventory_line.configure(
+                text=f"{t('Registered models')}: {n_models}   "
+                     f"{t('Installed runtimes')}: {n_rt}   "
+                     f"{t('Active runtime')}: {active_rt}")
         for w in self._kv_rows.winfo_children():
             w.destroy()
-        n_models, n_rt, active_rt = self._counts()
         for k, v in ((t("Registered models"), n_models),
                      (t("Installed runtimes"), n_rt),
                      (t("Active runtime"), active_rt)):
@@ -712,9 +873,42 @@ class DashboardPage(Page):
         server = self.ctx.services.get("server")
         if server is None:
             return
-        cmd = server.build_cmd_preview()
-        self._cmd.configure(text=" ".join(cmd) if cmd
-                            else t("No runtime selected"))
+        self._launch_cmd = server.build_cmd_preview()
+        display_cmd = list(self._launch_cmd)
+        if not self._config().show_api_details:
+            for index, arg in enumerate(display_cmd):
+                if arg == "--api-key" and index + 1 < len(display_cmd):
+                    display_cmd[index + 1] = "••••••••"
+                elif arg.startswith("--api-key="):
+                    display_cmd[index] = "--api-key=••••••••"
+        preview = (self._format_cmd(display_cmd) if display_cmd
+                   else t("No runtime selected"))
+        self._cmd.configure(state="normal", height=max(1, preview.count("\n") + 1))
+        self._cmd.delete("1.0", "end")
+        self._cmd.insert("1.0", preview)
+        self._highlight_code(self._cmd, preview)
+        self._cmd.configure(state="disabled")
+        self._cmd_copy.set_enabled(bool(self._launch_cmd))
+
+    @staticmethod
+    def _format_cmd(cmd: list[str]) -> str:
+        """Lay out a command preview as readable flag/value lines."""
+        lines = [cmd[0]]
+        index = 1
+        while index < len(cmd):
+            arg = cmd[index]
+            if (arg.startswith("--") and index + 1 < len(cmd)
+                    and not cmd[index + 1].startswith("--")):
+                lines.append(f"  {arg} {cmd[index + 1]}")
+                index += 2
+            else:
+                lines.append(f"  {arg}")
+                index += 1
+        return "\n".join(lines)
+
+    def _copy_launch_cmd(self) -> None:
+        if self._launch_cmd:
+            self._copy_value(" ".join(self._launch_cmd))
 
     def _log_sources(self) -> list[str] | None:
         selected = self._src.get()

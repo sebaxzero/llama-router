@@ -392,6 +392,7 @@ class ScrollFrame(tk.Frame):
         # Wheel scrolling anywhere over the frame
         self._canvas.bind_all("<MouseWheel>", self._on_wheel, add="+")
 
+
     def _on_body(self, _e) -> None:
         self._fit_height()
         self._canvas.configure(scrollregion=self._canvas.bbox("all"))
@@ -508,6 +509,57 @@ def section_label(parent: tk.Widget, c: dict, text: str) -> tk.Label:
     """Uppercase mono card heading."""
     return tk.Label(parent, text=theme.track(text), bg=parent.cget("bg"),
                     fg=c["faint"], font=theme.mono(8, "bold"))
+
+
+class CollapsibleCard(Card):
+    """Standard card header with a dashboard-style disclosure control."""
+
+    def __init__(self, parent: tk.Widget, c: dict, title: str,
+                 expanded: bool = True, pad: int = 16,
+                 on_toggle: Callable[[bool], None] | None = None,
+                 state_key: str | None = None) -> None:
+        super().__init__(parent, c, pad=pad)
+        self._state_key = state_key
+        self._state_store: dict[str, bool] | None = None
+        owner = parent
+        while owner is not None:
+            ctx = getattr(owner, "ctx", None)
+            if ctx is not None:
+                self._state_store = getattr(ctx, "collapsible_states", None)
+                break
+            owner = getattr(owner, "master", None)
+        if state_key and self._state_store is not None:
+            expanded = bool(self._state_store.get(state_key, expanded))
+        self._open = expanded
+        self._on_toggle = on_toggle
+        self.header = tk.Frame(self.body, bg=c["surface"])
+        self.header.pack(fill="x")
+        section_label(self.header, c, title).pack(side="left")
+        self._toggle = PillButton(self.header, c, "▾" if expanded else "▸", size=9,
+                                  padx=7, height=26, command=self.toggle)
+        self._toggle.pack(side="right")
+        self.content = tk.Frame(self.body, bg=c["surface"])
+        if expanded:
+            self.content.pack(fill="both", expand=True, pady=(10, 0))
+
+    def toggle(self) -> None:
+        self.set_open(not self._open)
+
+    @property
+    def is_open(self) -> bool:
+        return self._open
+
+    def set_open(self, open_: bool) -> None:
+        self._open = open_
+        self._toggle.set_text("▾" if open_ else "▸")
+        if open_:
+            self.content.pack(fill="both", expand=True, pady=(10, 0))
+        else:
+            self.content.pack_forget()
+        if self._state_key and self._state_store is not None:
+            self._state_store[self._state_key] = open_
+        if self._on_toggle is not None:
+            self._on_toggle(open_)
 
 
 def key_value(parent: tk.Widget, c: dict, key: str, value: str,

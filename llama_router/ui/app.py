@@ -40,6 +40,7 @@ class AppContext:
     colors: dict[str, str]
     services: dict[str, Any]
     enable_tray: bool = True
+    collapsible_states: dict[str, bool] = field(default_factory=dict)
     # Wired by App.__init__ immediately after construction — never call these
     # before the App exists.
     navigate: Callable[[str], None] = field(init=False)
@@ -86,6 +87,9 @@ class App:
 
         from llama_router.core.storage import db_read
         state = db_read(ctx.paths.db_path, _STATE_KEY, default={}) or {}
+        saved_cards = state.get("collapsible_cards", {})
+        ctx.collapsible_states = (saved_cards if isinstance(saved_cards, dict)
+                                  else {})
         self.root.geometry(_DEFAULT_GEOMETRY)  # always open at the reference size
 
         theme_name = self._current_theme_name()
@@ -484,7 +488,8 @@ class App:
         from llama_router.core.storage import db_write
         try:
             db_write(self.ctx.paths.db_path, _STATE_KEY,
-                     {"page": self._active})
+                     {"page": self._active,
+                      "collapsible_cards": self.ctx.collapsible_states})
         except Exception:
             pass
         if self._tray is not None:

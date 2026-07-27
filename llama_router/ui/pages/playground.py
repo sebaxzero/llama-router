@@ -16,7 +16,7 @@ from pathlib import Path
 from llama_router.i18n import t
 from llama_router.ui import theme
 from llama_router.ui.pages.base import PAGE_PAD, Page
-from llama_router.ui.widgets import (AutoScrollbar, Card, PillButton,
+from llama_router.ui.widgets import (AutoScrollbar, Card, CollapsibleCard, PillButton,
                                     ScrollFrame, section_label)
 
 _MAX_ATTACH = 200 * 1024        # per file, bytes
@@ -100,19 +100,19 @@ class PlaygroundPage(Page):
                    command=lambda: self.ctx.navigate("dashboard")).pack(side="right")
 
         # ── System prompt (collapsible) ──────────────────────────────────────
-        self._sysrow = sysrow = tk.Frame(content, bg=c["bg"])
-        sysrow.pack(fill="x", padx=PAGE_PAD)
-        self._sys_toggle = PillButton(sysrow, c, t("System prompt"), size=8,
-                                      padx=10, height=24,
-                                      command=self._toggle_system)
-        self._sys_toggle.pack(side="left")
-        self._sys_wrap = tk.Frame(content, bg=c["bg"])
-        self._sys = tk.Text(self._sys_wrap, height=3, bg=c["inset"],
+        self._sys_open = False
+        self._sys_card = CollapsibleCard(
+            content, c, t("System prompt"), expanded=False, pad=12,
+            on_toggle=lambda open_: setattr(self, "_sys_open", open_),
+            state_key="playground.system_prompt")
+        self._sys_open = self._sys_card.is_open
+        self._sys_card.pack(fill="x", padx=PAGE_PAD)
+        self._sysrow = self._sys_card
+        self._sys = tk.Text(self._sys_card.content, height=3, bg=c["inset"],
                             fg=c["text"], insertbackground=c["accent"], bd=0,
                             padx=10, pady=7, font=theme.mono(9), wrap="word",
                             highlightthickness=1, highlightbackground=c["border"])
         self._sys.pack(fill="x")
-        self._sys_open = False
 
         # ── Body: optional session sidebar + transcript ──────────────────────
         body = tk.Frame(content, bg=c["bg"])
@@ -585,12 +585,7 @@ class PlaygroundPage(Page):
     # ── System prompt ────────────────────────────────────────────────────────
 
     def _toggle_system(self) -> None:
-        self._sys_open = not self._sys_open
-        if self._sys_open:
-            self._sys_wrap.pack(fill="x", padx=PAGE_PAD, pady=(6, 0),
-                                after=self._sysrow)
-        else:
-            self._sys_wrap.pack_forget()
+        self._sys_card.toggle()
 
     # ── Theme-flip state ─────────────────────────────────────────────────────
 
@@ -611,8 +606,7 @@ class PlaygroundPage(Page):
         self._input.insert("1.0", d.get("draft", ""))
         self._sys.delete("1.0", "end")
         self._sys.insert("1.0", d.get("system", ""))
-        if d.get("system_open"):
-            self._toggle_system()
+        self._sys_card.set_open(bool(d.get("system_open")))
         if d.get("sidebar"):
             self._toggle_sidebar()
         if d.get("model"):

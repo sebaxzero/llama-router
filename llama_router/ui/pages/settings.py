@@ -8,7 +8,7 @@ from tkinter import ttk
 from llama_router.i18n import LANGUAGES, t
 from llama_router.ui import theme
 from llama_router.ui.pages.base import PAGE_PAD, Page
-from llama_router.ui.widgets import Card, PillButton, ScrollFrame, section_label
+from llama_router.ui.widgets import CollapsibleCard, PillButton, ScrollFrame
 
 _FIELD_W = 26   # entry width in chars
 
@@ -34,10 +34,10 @@ class SettingsPage(Page):
         cfg = self._config()
 
         # ── Appearance ──────────────────────────────────────────────────────
-        theme_card = Card(body, c)
+        theme_card = CollapsibleCard(body, c, t("Appearance"),
+                                     state_key="settings.appearance")
         theme_card.pack(fill="x", padx=PAGE_PAD, pady=(0, 14))
-        section_label(theme_card.body, c, t("Appearance")).pack(anchor="w")
-        pick = tk.Frame(theme_card.body, bg=c["surface"])
+        pick = tk.Frame(theme_card.content, bg=c["surface"])
         pick.pack(fill="x", pady=(10, 2))
         self._theme_btns = {}
         for _name in theme.theme_names():
@@ -46,17 +46,17 @@ class SettingsPage(Page):
                              command=lambda n=_name: self._pick_theme(n))
             btn.pack(side="left", padx=(0, 8))
             self._theme_btns[_name] = btn
-        tk.Label(theme_card.body,
+        tk.Label(theme_card.content,
                  text=t("Theme applies instantly and is saved automatically"),
                  bg=c["surface"], fg=c["faint"], font=theme.ui(8)).pack(
             anchor="w", pady=(4, 0))
         self._set_theme_active(cfg.theme)
 
         # ── Application ──────────────────────────────────────────────────────
-        app_card = Card(body, c)
+        app_card = CollapsibleCard(body, c, t("Application"),
+                                   state_key="settings.application")
         app_card.pack(fill="x", padx=PAGE_PAD, pady=(0, 14))
-        section_label(app_card.body, c, t("Application")).pack(anchor="w")
-        grid = self._grid(app_card.body)
+        grid = self._grid(app_card.content)
 
         self._language = self._combo(grid, 0, t("Language"),
                                      list(LANGUAGES.values()),
@@ -81,17 +81,15 @@ class SettingsPage(Page):
                                           cfg.minimize_to_tray)
 
         # ── Server ───────────────────────────────────────────────────────────
-        srv_card = Card(body, c)
+        srv_card = CollapsibleCard(body, c, t("Server"),
+                                   state_key="settings.server")
         srv_card.pack(fill="x", padx=PAGE_PAD, pady=(0, 14))
-        row = tk.Frame(srv_card.body, bg=c["surface"])
-        row.pack(fill="x")
-        section_label(row, c, t("Server")).pack(side="left")
-        reset = PillButton(row, c, t("Reset to defaults"), size=9, padx=12,
+        reset = PillButton(srv_card.header, c, t("Reset to defaults"), size=9, padx=12,
                            height=28, command=self._reset_server)
-        reset.pack(side="right")
+        reset.pack(side="right", padx=(0, 6))
 
         s = cfg.server
-        grid2 = self._grid(srv_card.body, two_columns=True)
+        grid2 = self._grid(srv_card.content, two_columns=True)
         self._expose = self._combo(grid2, 0, t("Network exposure"),
                                    [t("This machine only"), t("Local network"),
                                     t("Custom host")],
