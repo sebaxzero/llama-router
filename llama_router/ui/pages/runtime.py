@@ -10,7 +10,7 @@ from llama_router.core.utils import fmt_bytes
 from llama_router.i18n import t
 from llama_router.ui import theme
 from llama_router.ui.pages.base import PAGE_PAD, Page
-from llama_router.ui.widgets import (PillButton, section_label,
+from llama_router.ui.widgets import (PillButton, ScrollFrame, section_label,
                                     enable_row_hover)
 
 
@@ -26,8 +26,12 @@ class RuntimePage(Page):
                                        command=self._fetch)
         self._refresh_btn.pack(side="left")
 
+        scroll = ScrollFrame(self, c, fill_height=True)
+        scroll.pack(fill="both", expand=True)
+        content = scroll.body
+
         # ── Installed ────────────────────────────────────────────────────────
-        inst_panel = tk.Frame(self, bg=c["surface"],
+        inst_panel = tk.Frame(content, bg=c["surface"],
                               highlightbackground=c["border"],
                               highlightthickness=1)
         inst_panel.pack(fill="both", expand=True, padx=PAGE_PAD, pady=(0, 12))
@@ -62,7 +66,7 @@ class RuntimePage(Page):
                                     font=theme.ui(9))
 
         # ── Releases ─────────────────────────────────────────────────────────
-        rel_panel = tk.Frame(self, bg=c["surface"],
+        rel_panel = tk.Frame(content, bg=c["surface"],
                              highlightbackground=c["border"],
                              highlightthickness=1)
         rel_panel.pack(fill="both", expand=True, padx=PAGE_PAD, pady=(0, 12))
@@ -92,7 +96,7 @@ class RuntimePage(Page):
                                     fg=c["muted"], font=theme.ui(9))
 
         # ── Downloads strip ──────────────────────────────────────────────────
-        self._dl_strip = tk.Frame(self, bg=c["bg"])
+        self._dl_strip = tk.Frame(content, bg=c["bg"])
         self._dl_strip.pack(fill="x", padx=PAGE_PAD, pady=(0, PAGE_PAD))
         self._dl_rows: dict[str, tuple[tk.Frame, ttk.Progressbar, tk.Label]] = {}
 

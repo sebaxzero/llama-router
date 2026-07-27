@@ -374,8 +374,10 @@ class AutoScrollbar(ttk.Scrollbar):
 class ScrollFrame(tk.Frame):
     """Vertical scroll container. Put content in `self.body`."""
 
-    def __init__(self, parent: tk.Widget, c: dict) -> None:
+    def __init__(self, parent: tk.Widget, c: dict,
+                 fill_height: bool = False) -> None:
         super().__init__(parent, bg=c["bg"])
+        self._fill_height = fill_height
         self._canvas = tk.Canvas(self, bg=c["bg"], highlightthickness=0, bd=0)
         self._vbar = AutoScrollbar(self, orient="vertical",
                                    command=self._canvas.yview)
@@ -391,10 +393,23 @@ class ScrollFrame(tk.Frame):
         self._canvas.bind_all("<MouseWheel>", self._on_wheel, add="+")
 
     def _on_body(self, _e) -> None:
+        self._fit_height()
         self._canvas.configure(scrollregion=self._canvas.bbox("all"))
 
     def _on_canvas(self, e) -> None:
         self._canvas.itemconfigure(self._win, width=e.width)
+        self._fit_height()
+
+    def _fit_height(self) -> None:
+        """Let an optional page body fill the viewport before it overflows."""
+        if self._fill_height:
+            height = max(self._canvas.winfo_height(), self.body.winfo_reqheight())
+            self._canvas.itemconfigure(self._win, height=height)
+
+    def scroll_units(self, steps: int) -> None:
+        """Move the viewport by units for child controls that consume wheels."""
+        if steps:
+            self._canvas.yview_scroll(steps, "units")
 
     def _on_wheel(self, e) -> None:
         # bind_all outlives the page: guard against destroyed instances, and
@@ -404,11 +419,19 @@ class ScrollFrame(tk.Frame):
                 return
             x, y = self.winfo_pointerxy()
             w = self.winfo_containing(x, y)
-        except tk.TclError:
+        # ttk Combobox popdowns are Tcl-only windows, so Tk can return a
+        # widget path that tkinter cannot resolve through ``children``.
+        except (tk.TclError, KeyError):
             return
         while w is not None:
-            if w is self:
-                self._canvas.yview_scroll(-1 * (e.delta // 120), "units")
+            # ScrollFrames can be nested (the Profiles workspace contains a
+            # scrollable editor).  The first one in the widget ancestry owns
+            # this wheel event; letting an outer frame continue would move
+            # both viewports for a single gesture.
+            if isinstance(w, ScrollFrame):
+                if w is not self:
+                    return
+                self.scroll_units(-1 * (e.delta // 120))
                 return
             w = getattr(w, "master", None)
 

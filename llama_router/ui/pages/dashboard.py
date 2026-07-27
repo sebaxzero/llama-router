@@ -13,7 +13,7 @@ from __future__ import annotations
 import ipaddress
 import socket
 import tkinter as tk
-from tkinter import ttk
+from tkinter import filedialog, messagebox, ttk
 
 from llama_router.i18n import t
 from llama_router.ui import theme
@@ -127,32 +127,27 @@ class DashboardPage(Page):
         self._logs_btn.pack(side="left", padx=(6, 0))
         self._inventory_open = self._steps_open = self._logs_open = False
 
-        # ── Row: endpoint + inventory (restacks vertically when narrow) ──────
-        self._row = tk.Frame(body, bg=c["bg"])
-        self._row.pack(fill="x", padx=PAGE_PAD, pady=(14, 0))
-        self._row.columnconfigure(0, weight=1, uniform="dashboard-cards")
-        self._row.columnconfigure(1, weight=1, uniform="dashboard-cards")
-
-        ep = Card(self._row, c)
+        # ── Client connection ───────────────────────────────────────────────
+        # This card stays full-width.  Examples can be long, so sharing its
+        # row with the optional inventory would make both cards cramped.
+        ep = Card(body, c)
+        ep.pack(fill="x", padx=PAGE_PAD, pady=(14, 0))
         ep_row = tk.Frame(ep.body, bg=c["surface"])
         ep_row.pack(fill="x")
         tk.Label(ep_row, text=t("Connect your client").upper(),
                  bg=c["surface"], fg=c["faint"],
                  font=theme.mono(8, "bold")).pack(side="left", padx=(0, 12))
-        PillButton(ep_row, c, t("Examples"), command=self._show_client_guide,
-                   size=9, padx=14, height=30).pack(side="right")
+        self._examples_btn = PillButton(ep_row, c, t("Examples"),
+                                        command=self._toggle_client_examples,
+                                        size=9, padx=14, height=30)
+        self._examples_btn.pack(side="right")
         self._endpoint_rows = tk.Frame(ep.body, bg=c["surface"])
         self._endpoint_rows.pack(fill="x", pady=(10, 0))
+        self._client_examples_box = tk.Frame(ep.body, bg=c["surface"])
+        self._examples_open = False
         self._render_endpoints()
 
-        summary = Card(self._row, c)
-        tk.Label(summary.body, text=t("Inventory").upper(), bg=c["surface"],
-                 fg=c["faint"], font=theme.mono(8, "bold")).pack(anchor="w")
-        self._kv_rows = tk.Frame(summary.body, bg=c["surface"])
-        self._kv_rows.pack(fill="x", pady=(8, 0))
-
-        self._ep, self._summary = ep, summary
-        self._refresh_summary()
+        self._ep = ep
 
         # ── System (CPU / RAM) ───────────────────────────────────────────────
         self._usage_row = tk.Frame(body, bg=c["bg"])
@@ -175,15 +170,26 @@ class DashboardPage(Page):
         self._gpu_box.pack(fill="x", pady=(8, 0))
         self._gpu_rows: list[tuple] = []
 
-        # ── Getting started ──────────────────────────────────────────────────
-        steps = Card(body, c)
+        # ── Optional guidance: first steps + inventory ───────────────────────
+        self._guidance_row = tk.Frame(body, bg=c["bg"])
+        self._guidance_row.columnconfigure(0, weight=1, uniform="guidance")
+        self._guidance_row.columnconfigure(1, weight=1, uniform="guidance")
+
+        steps = Card(self._guidance_row, c)
         self._steps_card_w = steps
         tk.Label(steps.body, text=t("First steps").upper(), bg=c["surface"],
                  fg=c["faint"], font=theme.mono(8, "bold")).pack(anchor="w")
         self._steps_box = tk.Frame(steps.body, bg=c["surface"])
         self._steps_box.pack(fill="x", pady=(10, 0))
         self._render_steps()
-        # Secondary guidance is collapsed until requested.
+
+        summary = Card(self._guidance_row, c)
+        tk.Label(summary.body, text=t("Inventory").upper(), bg=c["surface"],
+                 fg=c["faint"], font=theme.mono(8, "bold")).pack(anchor="w")
+        self._kv_rows = tk.Frame(summary.body, bg=c["surface"])
+        self._kv_rows.pack(fill="x", pady=(8, 0))
+        self._summary = summary
+        self._refresh_summary()
 
         self._logpanel = tk.Frame(body, bg=c["surface"],
                                   highlightbackground=c["border"],
@@ -199,6 +205,10 @@ class DashboardPage(Page):
         self._src.bind("<<ComboboxSelected>>", lambda _e: self._reload_logs())
         PillButton(logbar, c, t("Clear"), size=9, padx=12, height=26,
                    command=self._clear_logs).pack(side="right")
+        PillButton(logbar, c, t("Export…"), size=9, padx=12, height=26,
+                   command=self._export_logs).pack(side="right", padx=(0, 6))
+        PillButton(logbar, c, t("Copy"), size=9, padx=12, height=26,
+                   command=self._copy_logs).pack(side="right", padx=(0, 6))
         self._follow = tk.BooleanVar(value=True)
         ttk.Checkbutton(logbar, text=t("Follow"), variable=self._follow,
                         takefocus=False).pack(side="right", padx=(0, 10))
@@ -209,6 +219,11 @@ class DashboardPage(Page):
         logscroll = ttk.Scrollbar(self._logpanel, orient="vertical",
                                   command=self._log_text.yview)
         self._log_text.configure(yscrollcommand=logscroll.set)
+        # ScrollFrame listens globally to the wheel.  Handle it here first so
+        # the cursor over the log moves the log, rather than the dashboard.
+        self._log_text.bind("<MouseWheel>", self._scroll_logs)
+        self._log_text.bind("<Button-4>", lambda _e: self._scroll_logs(-1))
+        self._log_text.bind("<Button-5>", lambda _e: self._scroll_logs(1))
         logscroll.pack(side="right", fill="y")
         self._log_text.pack(fill="both", expand=True, padx=1, pady=(0, 1))
         for level, token in _LEVEL_COLORS.items():
@@ -242,19 +257,31 @@ class DashboardPage(Page):
     # ── Responsive ───────────────────────────────────────────────────────────
 
     def _relayout_dash(self, w: int) -> None:
-        if not getattr(self, "_row", None):
+        if not getattr(self, "_guidance_row", None):
             return
-        self._ep.grid_forget()
         self._summary.grid_forget()
-        if not self._inventory_open:
-            self._ep.grid(row=0, column=0, columnspan=2, sticky="ew")
-        elif w < 720:
-            self._ep.grid(row=0, column=0, columnspan=2, sticky="ew",
-                          pady=(0, 12))
-            self._summary.grid(row=1, column=0, columnspan=2, sticky="ew")
+        self._steps_card_w.grid_forget()
+        if not (self._inventory_open or self._steps_open):
+            self._guidance_row.pack_forget()
         else:
-            self._ep.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
-            self._summary.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
+            pack_opts = {"fill": "x", "padx": PAGE_PAD, "pady": (14, 0)}
+            # Tk only accepts ``before`` for a sibling already managed by
+            # pack.  Logs starts collapsed, so it cannot be the target until
+            # the user has opened it.
+            if self._logpanel.winfo_ismapped():
+                pack_opts["before"] = self._logpanel
+            self._guidance_row.pack(**pack_opts)
+        if self._inventory_open and self._steps_open and w >= 720:
+            self._summary.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
+            self._steps_card_w.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
+        elif self._inventory_open and self._steps_open:
+            self._summary.grid(row=0, column=0, columnspan=2, sticky="ew",
+                               pady=(0, 12))
+            self._steps_card_w.grid(row=1, column=0, columnspan=2, sticky="ew")
+        elif self._inventory_open:
+            self._summary.grid(row=0, column=0, columnspan=2, sticky="ew")
+        else:
+            self._steps_card_w.grid(row=0, column=0, columnspan=2, sticky="ew")
 
     def _toggle_inventory(self) -> None:
         self._inventory_open = not self._inventory_open
@@ -266,11 +293,7 @@ class DashboardPage(Page):
         self._steps_open = not self._steps_open
         self._steps_btn.set_text(
             ("▴ " if self._steps_open else "▾ ") + t("First steps"))
-        if self._steps_open:
-            self._steps_card_w.pack(fill="x", padx=PAGE_PAD,
-                                    pady=(14, PAGE_PAD))
-        else:
-            self._steps_card_w.pack_forget()
+        self._relayout_dash(self._scroll.winfo_width())
 
     def _toggle_logs(self) -> None:
         self._logs_open = not self._logs_open
@@ -328,8 +351,29 @@ class DashboardPage(Page):
                      fg=self.c["accent"], font=theme.mono(9), padx=8,
                      pady=5).pack(side="left", fill="x", expand=True)
             PillButton(row, self.c, t("Copy"), size=8, padx=9, height=26,
-                       command=lambda value=url: self._copy_value(value)).pack(
+                        command=lambda value=url: self._copy_value(value)).pack(
+                            side="left", padx=(6, 0))
+        cfg = self._config()
+        api_key = cfg.server.api_key if cfg else ""
+        key_row = tk.Frame(self._endpoint_rows, bg=self.c["surface"])
+        key_row.pack(fill="x", pady=(7, 2))
+        tk.Label(key_row, text=t("API key"), width=13, anchor="w",
+                 bg=self.c["surface"], fg=self.c["muted"],
+                 font=theme.ui(9, "bold")).pack(side="left")
+        if api_key:
+            key_text = api_key if cfg.show_api_details else t("Configured (hidden)")
+            tk.Label(key_row, text=key_text, anchor="w",
+                     bg=self.c["inset"], fg=self.c["accent"],
+                     font=theme.mono(9), padx=8, pady=5).pack(
+                         side="left", fill="x", expand=True)
+            PillButton(key_row, self.c, t("Copy"), size=8, padx=9, height=26,
+                       command=lambda value=api_key: self._copy_value(value)).pack(
                            side="left", padx=(6, 0))
+        else:
+            tk.Label(key_row, text=t("Not configured"), anchor="w",
+                     bg=self.c["inset"], fg=self.c["faint"],
+                     font=theme.mono(9), padx=8, pady=5).pack(
+                         side="left", fill="x", expand=True)
         server = self.ctx.services.get("server")
         info = server.connection_info() if server else None
         is_lan = info["host"] == "0.0.0.0" if info else False
@@ -339,8 +383,46 @@ class DashboardPage(Page):
         if info and info["pending_restart"]:
             note += "  " + t("Saved network changes apply after restarting the server.")
         tk.Label(self._endpoint_rows, text=note, bg=self.c["surface"],
-                 fg=self.c["faint"], font=theme.ui(8), anchor="w",
-                 justify="left", wraplength=650).pack(fill="x", pady=(7, 0))
+                  fg=self.c["faint"], font=theme.ui(8), anchor="w",
+                  justify="left", wraplength=650).pack(fill="x", pady=(7, 0))
+        if self._examples_open:
+            self._render_client_examples()
+
+    def _toggle_client_examples(self) -> None:
+        self._examples_open = not self._examples_open
+        if self._examples_open:
+            self._render_client_examples()
+            self._client_examples_box.pack(fill="x", pady=(12, 0))
+            self._examples_btn.set_text(t("Hide examples"))
+        else:
+            self._client_examples_box.pack_forget()
+            self._examples_btn.set_text(t("Examples"))
+
+    def _render_client_examples(self) -> None:
+        for widget in self._client_examples_box.winfo_children():
+            widget.destroy()
+        for label, example in self._client_examples().items():
+            example_box = tk.Frame(self._client_examples_box, bg=self.c["surface"])
+            example_box.pack(fill="x", pady=(0, 8))
+            heading = tk.Frame(example_box, bg=self.c["surface"])
+            heading.pack(fill="x", pady=(0, 3))
+            tk.Label(heading, text=label.upper(), bg=self.c["surface"],
+                     fg=self.c["faint"], font=theme.mono(8, "bold")).pack(
+                         side="left")
+            PillButton(heading, self.c, t("Copy"), size=8, padx=9, height=24,
+                       command=lambda value=example: self._copy_value(value)).pack(
+                           side="right")
+            # Shell examples are compact but wrap on a narrow card; SDK
+            # examples need one row per source line so their tail never ends
+            # up behind the Text widget's own viewport.
+            code_rows = max(3, example.count("\n") + 1)
+            code = tk.Text(example_box, height=code_rows, bg=self.c["inset"],
+                           fg=self.c["text"], bd=0, padx=10, pady=8,
+                           font=theme.mono(8), wrap="word",
+                           insertbackground=self.c["text"])
+            code.insert("1.0", example)
+            code.configure(state="disabled")
+            code.pack(fill="x")
 
     def _client_examples(self) -> dict[str, str]:
         base, model = self._base_url(), self._model_alias()
@@ -348,7 +430,8 @@ class DashboardPage(Page):
         cfg = self._config()
         key_required = (server.connection_info()["api_key_required"] if server
                         else bool(cfg and cfg.server.api_key))
-        key = "YOUR_API_KEY" if key_required else "no-key"
+        key = (cfg.server.api_key if key_required and cfg.show_api_details
+               else "YOUR_API_KEY" if key_required else "no-key")
         return {
             "cURL": (
                 f'curl {base}/v1/chat/completions -H "Content-Type: application/json" '
@@ -361,7 +444,7 @@ class DashboardPage(Page):
                 f'    model="{model}",\n'
                 '    messages=[{"role": "user", "content": "Hello!"}],\n'
                 ")\nprint(reply.choices[0].message.content)"),
-            "JavaScript": (
+            "TypeScript": (
                 "import OpenAI from \"openai\";\n\n"
                 f'const client = new OpenAI({{ baseURL: "{base}/v1", apiKey: "{key}" }});\n'
                 "const reply = await client.chat.completions.create({\n"
@@ -595,6 +678,13 @@ class DashboardPage(Page):
         if not result.get("ok"):
             target = {"no_runtime": "runtime", "no_models": "models",
                       "port_in_use": "settings"}.get(result.get("reason"))
+            if result.get("reason") == "port_in_use":
+                port = self.ctx.services["config"].get().server.port
+                messagebox.showwarning(
+                    t("Port unavailable"),
+                    t("Port {port} is busy — stop the other process or change it in Settings.",
+                      port=port),
+                    parent=self)
             if target:
                 self.ctx.navigate(target)
             else:
@@ -663,6 +753,40 @@ class DashboardPage(Page):
     def _clear_logs(self) -> None:
         self.ctx.logs.clear()
         self._reload_logs()
+
+    def _scroll_logs(self, event_or_steps) -> str:
+        """Scroll the log and prevent the dashboard's global wheel binding."""
+        if isinstance(event_or_steps, int):
+            steps = event_or_steps
+        else:
+            # Windows normally sends ±120, while macOS may send much smaller
+            # deltas.  Only the direction matters for one Tk scroll unit.
+            steps = -1 if event_or_steps.delta > 0 else (
+                1 if event_or_steps.delta < 0 else 0)
+        if steps:
+            self._log_text.yview_scroll(steps, "units")
+        return "break"
+
+    def _visible_logs(self) -> str:
+        return self._log_text.get("1.0", "end-1c")
+
+    def _copy_logs(self) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(self._visible_logs())
+
+    def _export_logs(self) -> None:
+        path = filedialog.asksaveasfilename(
+            parent=self, title=t("Export logs"), defaultextension=".log",
+            filetypes=[(t("Log files"), "*.log"),
+                       (t("Text files"), "*.txt"),
+                       (t("All files"), "*.*")])
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8", newline="\n") as out:
+                out.write(self._visible_logs())
+        except OSError as exc:
+            self.ctx.logs.log("app", "error", f"Could not export logs: {exc}")
 
     def on_show(self) -> None:
         self._refresh_summary()

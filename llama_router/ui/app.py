@@ -292,12 +292,6 @@ class App:
             lambda _e: self._nav_canvas.configure(
                 scrollregion=self._nav_canvas.bbox("all")))
         self._nav_canvas.bind("<Configure>", self._on_nav_resize)
-        self._nav_canvas.bind(
-            "<MouseWheel>",
-            lambda e: self._nav_canvas.xview_scroll(-1 * (e.delta // 120), "units"))
-        self._nav_canvas.bind(
-            "<Shift-MouseWheel>",
-            lambda e: self._nav_canvas.xview_scroll(-1 * (e.delta // 120), "units"))
 
         tk.Frame(self.root, bg=c["border"], height=1).pack(fill="x")
         self._on_nav_resize()

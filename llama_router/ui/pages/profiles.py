@@ -160,6 +160,15 @@ _SECTION_COLUMNS = {
     "Router": 2,
 }
 
+# Keep the controls most often tuned for a model in the always-visible part of
+# the editor.  They remain in their original sections when persisted; this only
+# changes the form layout, so existing profiles and generated presets are
+# unaffected.
+_QUICK_FIELD_KEYS = {
+    "ctx-size", "flash-attn", "temp", "top-k", "top-p",
+    "cache-type-k", "cache-type-v", "load-on-startup",
+}
+
 # The sampler params a sampling preset owns — applying a preset clears all of
 # them first, so presets combine cleanly with any profile (pi-test rule).
 _SAMPLING_KEYS = [
@@ -223,15 +232,18 @@ class ProfilesPage(Page):
         self._workspace_nav["profiles"].pack(side="left")
         self._workspace_nav["profiles"].set_active(True)
 
-        cols = self._cols = tk.Frame(self, bg=c["bg"])
-        cols.pack(fill="both", expand=True, padx=PAGE_PAD, pady=(0, PAGE_PAD))
+        self._cols = ScrollFrame(self, dict(c, bg=c["bg"]), fill_height=True)
+        self._cols.pack(fill="both", expand=True, padx=PAGE_PAD,
+                        pady=(0, PAGE_PAD))
+        cols = self._cols.body
         cols.columnconfigure(0, weight=0)
         cols.columnconfigure(1, weight=1, uniform="profile-detail")
         cols.columnconfigure(2, weight=1, uniform="profile-detail")
         cols.rowconfigure(0, weight=1)
 
         # ── Left: models → profiles tree ─────────────────────────────────────
-        left = tk.Frame(cols, bg=c["bg"], width=230)
+        self._profile_list = tk.Frame(cols, bg=c["bg"], width=210)
+        left = self._profile_list
         left.grid(row=0, column=0, sticky="nw", padx=(0, 14))
 
         treepanel = tk.Frame(left, bg=c["surface"])
@@ -261,10 +273,11 @@ class ProfilesPage(Page):
         lbtns2 = tk.Frame(left, bg=c["bg"])
         lbtns2.pack(fill="x", pady=(6, 0))
         PillButton(lbtns2, c, t("Activate all"), size=9, padx=12, height=28,
-                   command=lambda: self._set_all_active(True)).pack(side="left")
+                   command=lambda: self._set_all_active(True)).pack(
+                       anchor="w")
         PillButton(lbtns2, c, t("Deactivate all"), size=9, padx=12, height=28,
                    command=lambda: self._set_all_active(False)
-                   ).pack(side="left", padx=(6, 0))
+                   ).pack(anchor="w", pady=(6, 0))
 
         # ── Right: editor ────────────────────────────────────────────────────
         self._editor = tk.Frame(cols, bg=c["surface"],
@@ -283,8 +296,39 @@ class ProfilesPage(Page):
             self._preset_host, self.ctx, embedded=True)
         self._preset_view.pack(fill="both", expand=True)
         self._library_view: ModelsPage | None = None
+        self._compact_profiles: bool | None = None
+        self._cols.bind("<Configure>", self._on_profiles_resize, add="+")
+        self.after_idle(self._on_profiles_resize)
         self.subscribe("preset_imported", self._on_preset_imported)
         self._refresh_tree()
+
+    def _on_profiles_resize(self, event=None) -> None:
+        """Stack the preset below the editor before either panel gets cramped."""
+        width = event.width if event is not None else self._cols.winfo_width()
+        if width <= 1:
+            return
+        compact = width < 1100
+        if compact == self._compact_profiles:
+            return
+        self._compact_profiles = compact
+        if compact:
+            self._profile_list.grid_configure(row=0, column=0, rowspan=2,
+                                              sticky="nsw", padx=(0, 14))
+            self._editor.grid_configure(row=0, column=1, columnspan=2,
+                                        sticky="nsew", padx=0)
+            self._preset_host.grid_configure(row=1, column=1, columnspan=2,
+                                              sticky="nsew", pady=(12, 0))
+            self._cols.body.rowconfigure(0, weight=3)
+            self._cols.body.rowconfigure(1, weight=2)
+        else:
+            self._profile_list.grid_configure(row=0, column=0, rowspan=1,
+                                              sticky="nw", padx=(0, 14))
+            self._editor.grid_configure(row=0, column=1, columnspan=1,
+                                        sticky="nsew", padx=(0, 12))
+            self._preset_host.grid_configure(row=0, column=2, columnspan=1,
+                                              sticky="nsew", pady=0)
+            self._cols.body.rowconfigure(0, weight=1)
+            self._cols.body.rowconfigure(1, weight=0, minsize=0)
 
     def _show_workspace(self, name: str) -> None:
         showing_profiles = self._cols.winfo_ismapped()
@@ -318,9 +362,12 @@ class ProfilesPage(Page):
 
     def _build_editor(self) -> None:
         c = self.c
-        outer = tk.Frame(self._editor, bg=c["surface"])
-        outer.pack(fill="both", expand=True, padx=18, pady=16)
-        self._editor_body = outer
+        # One scroll surface keeps every profile control reachable in a small
+        # window; the advanced portion must not be the only scrollable area.
+        self._editor_body = ScrollFrame(self._editor,
+                                        dict(c, bg=c["surface"]))
+        self._editor_body.pack(fill="both", expand=True, padx=18, pady=16)
+        outer = self._editor_body.body
 
         top = tk.Frame(outer, bg=c["surface"])
         top.pack(fill="x")
@@ -349,21 +396,26 @@ class ProfilesPage(Page):
         ttk.Checkbutton(ident, variable=self._active,
                         takefocus=False).grid(row=2, column=1, sticky="w")
 
-        toggle = tk.Frame(outer, bg=c["surface"], cursor="hand2")
-        toggle.pack(fill="x", pady=(8, 0))
-        self._params_toggle = tk.Label(
-            toggle, text="▾  " + t("Advanced parameters"),
-            bg=c["surface"], fg=c["muted"], font=theme.mono(8, "bold"),
-            cursor="hand2")
-        self._params_toggle.pack(anchor="w")
-        for widget in (toggle, self._params_toggle):
-            widget.bind("<Button-1>", lambda _e: self._toggle_params())
+        # The essential inference controls stay visible.  The complete form
+        # remains available below for less common llama-server options.
+        section_label(outer, c, t("Core")).pack(anchor="w", pady=(10, 2))
+        quick = tk.Frame(outer, bg=c["surface"])
+        quick.pack(fill="x")
+        # Three columns leave enough room for longer labels such as
+        # "Load on startup" when the window is narrow.
+        for col in range(3):
+            quick.columnconfigure(col, weight=1, uniform="quick-param-cell")
+        quick_fields = [field for _, fields in _SECTIONS for field in fields
+                        if field[0] in _QUICK_FIELD_KEYS]
+        for index, (key, label, kind, extra) in enumerate(quick_fields):
+            row, col = divmod(index, 3)
+            cell = tk.Frame(quick, bg=c["surface"])
+            cell.grid(row=row, column=col, sticky="ew", padx=(0, 6))
+            self._label(cell, 0, 0, t(label))
+            self._make_field(cell, 1, 0, key, kind, extra)
 
-        sc = self._params_sc = ScrollFrame(outer, dict(c, bg=c["surface"]))
-        body = sc.body
-
-        pickers = tk.Frame(body, bg=c["surface"])
-        pickers.pack(fill="x", pady=(10, 2))
+        pickers = tk.Frame(outer, bg=c["surface"])
+        pickers.pack(fill="x", pady=(8, 0))
         pickers.columnconfigure(0, weight=1, uniform="profile-picker")
         pickers.columnconfigure(1, weight=1, uniform="profile-picker")
         self._preset_cb = ttk.Combobox(pickers, state="readonly", width=18,
@@ -375,6 +427,19 @@ class ProfilesPage(Page):
         self._copy_cb.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         self._copy_cb.bind("<<ComboboxSelected>>", self._on_copy_from)
 
+        toggle = tk.Frame(outer, bg=c["surface"], cursor="hand2")
+        toggle.pack(fill="x", pady=(8, 0))
+        self._params_toggle = tk.Label(
+            toggle, text="▾  " + t("Advanced parameters"),
+            bg=c["surface"], fg=c["muted"], font=theme.mono(8, "bold"),
+            cursor="hand2")
+        self._params_toggle.pack(anchor="w")
+        for widget in (toggle, self._params_toggle):
+            widget.bind("<Button-1>", lambda _e: self._toggle_params())
+
+        self._params_sc = tk.Frame(outer, bg=c["surface"])
+        body = self._params_sc
+
         for title, fields in _SECTIONS:
             section_label(body, c, t(title)).pack(anchor="w", pady=(12, 2))
             grid = tk.Frame(body, bg=c["surface"])
@@ -385,8 +450,10 @@ class ProfilesPage(Page):
 
             # Boolean switches are easier to scan as one vertical group, so
             # render every other field first and append switches afterwards.
-            values = [field for field in fields if field[2] != "bool"]
-            switches = [field for field in fields if field[2] == "bool"]
+            advanced_fields = [field for field in fields
+                               if field[0] not in _QUICK_FIELD_KEYS]
+            values = [field for field in advanced_fields if field[2] != "bool"]
+            switches = [field for field in advanced_fields if field[2] == "bool"]
             row = 0
             slot = 0
             for key, label, kind, extra in values:
@@ -467,6 +534,11 @@ class ProfilesPage(Page):
                               font=theme.ui(9))
             cb.grid(row=row, column=col, sticky="w", pady=4, padx=(0, 12),
                     columnspan=columnspan)
+            # A wheel over a closed combobox normally changes its selection.
+            # In the profile form it should continue scrolling the editor.
+            cb.bind("<MouseWheel>", self._scroll_editor_from_choice)
+            cb.bind("<Button-4>", lambda _e: self._scroll_editor_from_choice(-1))
+            cb.bind("<Button-5>", lambda _e: self._scroll_editor_from_choice(1))
             self._fields[key] = (kind, cb, extra)
         elif kind == "file":
             cell = tk.Frame(grid, bg=c["surface"])
@@ -488,6 +560,16 @@ class ProfilesPage(Page):
             en.grid(row=row, column=col, sticky="w", pady=4, padx=(0, 12),
                     columnspan=columnspan)
             self._fields[key] = (kind, en, extra)
+
+    def _scroll_editor_from_choice(self, event_or_steps) -> str:
+        """Scroll the editor instead of cycling a combobox with the wheel."""
+        if isinstance(event_or_steps, int):
+            steps = event_or_steps
+        else:
+            steps = -1 if event_or_steps.delta > 0 else (
+                1 if event_or_steps.delta < 0 else 0)
+        self._editor_body.scroll_units(steps)
+        return "break"
 
     def _text(self, parent: tk.Widget, height: int) -> tk.Text:
         c = self.c

@@ -194,6 +194,7 @@ class AppConfig(_Base):
     # UI / appearance
     language: str = "en"
     theme: str = "midnight"
+    show_api_details: bool = False
 
     # Startup behaviour
     autostart_server: bool = False

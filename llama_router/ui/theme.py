@@ -353,13 +353,14 @@ def apply(root: tk.Tk, name: str = "midnight") -> dict:
               background=[("active", c["surface"])],
               indicatorcolor=[("selected", c["accent"])])
 
-    # Scrollbars — thinner, quieter, with hover
+    # Scrollbars need a practical hit target: they are used on tables, editors
+    # and page forms, not just as a visual hint for mouse-wheel scrolling.
     style.configure("Vertical.TScrollbar", background=c["border"],
-                    troughcolor=c["bg"], borderwidth=0, arrowsize=0, width=6)
+                    troughcolor=c["bg"], borderwidth=0, arrowsize=12, width=12)
     style.map("Vertical.TScrollbar", background=[("active", c["faint"])],
               troughcolor=[("active", c["bg"])])
     style.configure("Horizontal.TScrollbar", background=c["border"],
-                    troughcolor=c["bg"], borderwidth=0, arrowsize=0, width=6)
+                    troughcolor=c["bg"], borderwidth=0, arrowsize=12, width=12)
     style.map("Horizontal.TScrollbar", background=[("active", c["faint"])])
 
     style.configure("Horizontal.TProgressbar", background=c["accent"],

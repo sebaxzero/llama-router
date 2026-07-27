@@ -16,7 +16,8 @@ from pathlib import Path
 from llama_router.i18n import t
 from llama_router.ui import theme
 from llama_router.ui.pages.base import PAGE_PAD, Page
-from llama_router.ui.widgets import AutoScrollbar, Card, PillButton, section_label
+from llama_router.ui.widgets import (AutoScrollbar, Card, PillButton,
+                                    ScrollFrame, section_label)
 
 _MAX_ATTACH = 200 * 1024        # per file, bytes
 _FENCE = re.compile(r"```[^\n]*\n(.*?)(?:```|\Z)", re.S)
@@ -78,8 +79,18 @@ class PlaygroundPage(Page):
         PillButton(head.actions, c, t("Sessions"), size=9, padx=12, height=28,
                    command=self._toggle_sidebar).pack(side="left", pady=(12, 0))
 
+        # Keep the composer outside the page scroller: it must remain usable
+        # while a long transcript, banner, or system prompt is being viewed.
+        self._composer = composer = tk.Frame(self, bg=c["bg"])
+        composer.pack(side="bottom", fill="x")
+
+        # The history and auxiliary controls may scroll in a short window.
+        scroll = ScrollFrame(self, c, fill_height=True)
+        scroll.pack(fill="both", expand=True)
+        content = scroll.body
+
         # ── Offline banner ───────────────────────────────────────────────────
-        self._banner = Card(self, c, pad=12)
+        self._banner = Card(content, c, pad=12)
         brow = tk.Frame(self._banner.body, bg=c["surface"])
         brow.pack(fill="x")
         tk.Label(brow, text=t("The server is not running — start it to chat."),
@@ -89,13 +100,13 @@ class PlaygroundPage(Page):
                    command=lambda: self.ctx.navigate("dashboard")).pack(side="right")
 
         # ── System prompt (collapsible) ──────────────────────────────────────
-        self._sysrow = sysrow = tk.Frame(self, bg=c["bg"])
+        self._sysrow = sysrow = tk.Frame(content, bg=c["bg"])
         sysrow.pack(fill="x", padx=PAGE_PAD)
         self._sys_toggle = PillButton(sysrow, c, t("System prompt"), size=8,
                                       padx=10, height=24,
                                       command=self._toggle_system)
         self._sys_toggle.pack(side="left")
-        self._sys_wrap = tk.Frame(self, bg=c["bg"])
+        self._sys_wrap = tk.Frame(content, bg=c["bg"])
         self._sys = tk.Text(self._sys_wrap, height=3, bg=c["inset"],
                             fg=c["text"], insertbackground=c["accent"], bd=0,
                             padx=10, pady=7, font=theme.mono(9), wrap="word",
@@ -104,7 +115,7 @@ class PlaygroundPage(Page):
         self._sys_open = False
 
         # ── Body: optional session sidebar + transcript ──────────────────────
-        body = tk.Frame(self, bg=c["bg"])
+        body = tk.Frame(content, bg=c["bg"])
         body.pack(fill="both", expand=True, padx=PAGE_PAD, pady=(10, 0))
 
         self._sidebar = tk.Frame(body, bg=c["surface"],
@@ -140,10 +151,10 @@ class PlaygroundPage(Page):
         self._text.bind("<Button-3>", self._on_right_click)
 
         # ── Attachment chips ─────────────────────────────────────────────────
-        self._chips = tk.Frame(self, bg=c["bg"])
+        self._chips = tk.Frame(composer, bg=c["bg"])
 
         # ── Input ────────────────────────────────────────────────────────────
-        self._inputrow = row = tk.Frame(self, bg=c["bg"])
+        self._inputrow = row = tk.Frame(composer, bg=c["bg"])
         row.pack(fill="x", padx=PAGE_PAD, pady=(10, PAGE_PAD))
         self._input = tk.Text(row, height=3, bg=c["inset"], fg=c["text"],
                               insertbackground=c["accent"], bd=0, padx=10,

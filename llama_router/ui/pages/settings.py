@@ -71,11 +71,14 @@ class SettingsPage(Page):
         self._auto_check = self._check(
             grid, 3, t("Auto-check for runtime updates"),
             cfg.auto_check_releases)
+        self._show_api_details = self._check(
+            grid, 4, t("Show API key in dashboard and examples"),
+            cfg.show_api_details)
         from llama_router.services import tray
         self._tray_var = None
         if tray.is_supported():
-            self._tray_var = self._check(grid, 4, t("Minimize to tray"),
-                                         cfg.minimize_to_tray)
+            self._tray_var = self._check(grid, 5, t("Minimize to tray"),
+                                          cfg.minimize_to_tray)
 
         # ── Server ───────────────────────────────────────────────────────────
         srv_card = Card(body, c)
@@ -103,7 +106,7 @@ class SettingsPage(Page):
         self._threads = self._entry(grid2, 5, t("CPU threads"),
                                     str(s.cpu_threads))
         self._api_key_real = s.api_key
-        self._api_key_visible = False
+        self._api_key_visible = cfg.show_api_details
         self._api_key = self._api_key_control(grid2, 6)
         self._stop_timeout = self._entry(grid2, 7, t("Stop timeout (s)"),
                                          str(s.stop_timeout))
@@ -114,6 +117,8 @@ class SettingsPage(Page):
                                           s.restart_on_crash)
         self._extra = self._entry(grid2, 11, t("Extra arguments"), s.extra_args,
                                   wide=True)
+        self._show_api_details.trace_add(
+            "write", lambda *_: self._apply_api_details_visibility())
         self._sync_host()
         self._wire_autosave()
 
@@ -135,6 +140,7 @@ class SettingsPage(Page):
             "autostart": self._autostart.get(),
             "max_dl": self._max_dl.get(),
             "auto_check": self._auto_check.get(),
+            "show_api_details": self._show_api_details.get(),
             "tray": self._tray_var.get() if self._tray_var else None,
             "expose": self._expose.get(),
             "host": self._host.get(),
@@ -155,6 +161,7 @@ class SettingsPage(Page):
         self._language.set(d["language"])
         self._autostart.set(d["autostart"])
         self._auto_check.set(d["auto_check"])
+        self._show_api_details.set(d.get("show_api_details", False))
         if self._tray_var and d.get("tray") is not None:
             self._tray_var.set(d["tray"])
         self._cont_batching.set(d["cont_batching"])
@@ -170,7 +177,7 @@ class SettingsPage(Page):
             w.delete(0, "end")
             w.insert(0, d[key])
         self._api_key_real = d.get("api_key", "")
-        self._api_key_visible = False
+        self._api_key_visible = self._show_api_details.get()
         self._render_api_key()
         self._sync_host()
 
@@ -263,6 +270,14 @@ class SettingsPage(Page):
         self._api_key_visible = not self._api_key_visible
         self._render_api_key()
 
+    def _apply_api_details_visibility(self) -> None:
+        """Apply the persisted API-details preference to the key field."""
+        if not hasattr(self, "_api_key"):
+            return
+        self._current_api_key()
+        self._api_key_visible = self._show_api_details.get()
+        self._render_api_key()
+
     def _copy_api_key(self) -> None:
         value = self._current_api_key()
         if value:
@@ -320,7 +335,7 @@ class SettingsPage(Page):
                    self._stop_timeout, self._extra)
         combos = (self._language, self._expose)
         variables = (self._autostart, self._auto_check, self._cont_batching,
-                     self._metrics, self._restart_crash)
+                     self._metrics, self._restart_crash, self._show_api_details)
         if self._tray_var is not None:
             variables += (self._tray_var,)
         for entry in entries:
@@ -364,6 +379,7 @@ class SettingsPage(Page):
                                                   cfg.max_concurrent_downloads,
                                                   1, 10),
             "auto_check_releases": self._auto_check.get(),
+            "show_api_details": self._show_api_details.get(),
             "server": {
                 "expose": self._expose_value(),
                 "host": self._host.get().strip() or "127.0.0.1",
