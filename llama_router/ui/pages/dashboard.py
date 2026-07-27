@@ -879,6 +879,7 @@ class DashboardPage(Page):
         server = self.ctx.services.get("server")
         if server is None:
             return
+        # Empty on a fresh install until the user selects a runtime.
         self._launch_cmd = server.build_cmd_preview()
         display_cmd = list(self._launch_cmd)
         if not self._config().show_api_details:

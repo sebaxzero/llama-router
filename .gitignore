@@ -34,3 +34,6 @@ venv/
 # agents
 AGENTS.md
 
+# pi agent cache / installed extensions
+.pi/
+

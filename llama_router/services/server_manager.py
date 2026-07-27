@@ -323,10 +323,13 @@ class ServerManager:
                                          if self._process else None),
         }
 
-    def build_cmd_preview(self) -> list[str] | None:
+    def build_cmd_preview(self) -> list[str]:
         exe = self._runtimes.get_executable()
         if not exe:
-            return None
+            # A fresh data folder has no selected runtime yet.  UI callers
+            # treat the preview as an iterable, so represent "no command" as
+            # an empty list instead of leaking an optional value into startup.
+            return []
         return self._build_cmd(exe, self._paths.preset_ini, self._config.get())
 
     def start(self) -> dict[str, Any]:
