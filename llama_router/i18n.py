@@ -33,6 +33,9 @@ CATALOGS: dict[str, dict[str, str]] = {
         "Profiles": "Perfiles",
         "Server": "Servidor",
         "Settings": "Ajustes",
+        "Preparing interface… {done}/{total}":
+            "Preparando interfaz… {done}/{total}",
+        "Interface ready": "Interfaz lista",
         "a control panel for llama.cpp": "panel de control para llama.cpp",
 
         # ── Page eyebrows / placeholders ─────────────────────────────────────

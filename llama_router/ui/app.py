@@ -6,6 +6,8 @@ replace their placeholders phase by phase.
 """
 from __future__ import annotations
 
+import logging
+import time
 import tkinter as tk
 from dataclasses import dataclass, field
 from tkinter import ttk
@@ -29,6 +31,9 @@ from llama_router.ui.widgets import AppMark, NavItem, StatusDot
 _DRAIN_MS = 100          # EventBus drain cadence
 _STATE_KEY = "ui_state"  # KV key for the persisted active page
 _DEFAULT_GEOMETRY = "960x640"  # fixed startup size (matches tools/screenshots.py)
+_PREWARM_DELAY_MS = 150  # let the initial page paint before hidden pages build
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -81,6 +86,8 @@ class App:
         ctx.apply_theme = self.apply_theme
         ctx.apply_language = self.apply_language
         self._clock_id: int | None = None
+        self._prewarm_id: str | None = None
+        self._prewarm_queue: list[str] = []
         self._nav_hbar_visible = False
         self._rebuilding = False   # guards resize handlers during theme teardown
         self._closing = False
@@ -169,6 +176,7 @@ class App:
 
         # Tear down: drop chrome subscriptions + the per-second clock timer.
         self.ctx.events.unsubscribe("server_status", self._on_server_status)
+        self._cancel_prewarm()
         if self._clock_id is not None:
             self.root.after_cancel(self._clock_id)
             self._clock_id = None
@@ -356,6 +364,67 @@ class App:
         self._pages = {}
         self._active = None
         self.show_page(active_key)
+        self._start_prewarm()
+
+    def _create_page(self, key: str):
+        """Build and cache one page without making it visible."""
+        started = time.perf_counter()
+        cls = PAGES[key][1]
+        page = cls(self.content, self.ctx)
+        self._pages[key] = page
+        log.debug("Built %s page in %.1f ms", key,
+                  (time.perf_counter() - started) * 1000)
+        return page
+
+    def _start_prewarm(self) -> None:
+        """Build hidden pages incrementally after the first page has painted.
+
+        A separate ``after`` callback is used for every page so Tk can process
+        redraws and input between builds.  Page ``on_show`` hooks deliberately
+        remain navigation-only: prewarming must not trigger scans or network
+        work.
+        """
+        self._cancel_prewarm()
+        self._prewarm_queue = [key for key in PAGES if key not in self._pages]
+        if not self._prewarm_queue:
+            return
+        self._set_prewarm_status(0, len(self._prewarm_queue))
+        self._prewarm_id = self.root.after(
+            _PREWARM_DELAY_MS, self._prewarm_next)
+
+    def _prewarm_next(self) -> None:
+        self._prewarm_id = None
+        total = len(PAGES) - 1
+        while self._prewarm_queue:
+            key = self._prewarm_queue.pop(0)
+            if key not in self._pages:
+                self._create_page(key)
+                break
+
+        remaining = sum(key not in self._pages for key in self._prewarm_queue)
+        done = total - remaining
+        if self._prewarm_queue:
+            self._set_prewarm_status(done, total)
+            self._prewarm_id = self.root.after_idle(self._prewarm_next)
+        else:
+            self._sb_right.configure(text=t("Interface ready"))
+            self._prewarm_id = self.root.after(
+                1200, lambda: self._sb_right.configure(text=""))
+
+    def _set_prewarm_status(self, done: int, total: int) -> None:
+        self._sb_right.configure(
+            text=t("Preparing interface… {done}/{total}",
+                   done=done, total=total))
+
+    def _cancel_prewarm(self) -> None:
+        prewarm_id = getattr(self, "_prewarm_id", None)
+        if prewarm_id is not None:
+            try:
+                self.root.after_cancel(prewarm_id)
+            except Exception:
+                pass
+        self._prewarm_id = None
+        self._prewarm_queue = []
 
     # ── Status bar ───────────────────────────────────────────────────────────
 
@@ -413,8 +482,7 @@ class App:
             self._nav[self._active].set_active(False)
 
         if key not in self._pages:
-            cls = PAGES[key][1]
-            self._pages[key] = cls(self.content, self.ctx)
+            self._create_page(key)
         page = self._pages[key]
         page.pack(fill="both", expand=True)
         self._nav[key].set_active(True)
@@ -485,6 +553,7 @@ class App:
         if self._closing:
             return
         self._closing = True
+        self._cancel_prewarm()
         from llama_router.core.storage import db_write
         try:
             db_write(self.ctx.paths.db_path, _STATE_KEY,
