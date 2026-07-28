@@ -36,7 +36,8 @@ class SettingsPage(Page):
 
         # ── Appearance ──────────────────────────────────────────────────────
         theme_card = CollapsibleCard(body, c, t("Appearance"),
-                                     state_key="settings.appearance")
+                                     state_key="settings.appearance",
+                                     accent=c["panel_accent"])
         theme_card.pack(fill="x", padx=PAGE_PAD, pady=(0, 14))
         pick = tk.Frame(theme_card.content, bg=c["surface"])
         pick.pack(fill="x", pady=(10, 2))
@@ -55,7 +56,8 @@ class SettingsPage(Page):
 
         # ── Application ──────────────────────────────────────────────────────
         app_card = CollapsibleCard(body, c, t("Application"),
-                                   state_key="settings.application")
+                                   state_key="settings.application",
+                                   accent=c["panel_num"])
         app_card.pack(fill="x", padx=PAGE_PAD, pady=(0, 14))
         grid = self._grid(app_card.content)
 
@@ -83,7 +85,8 @@ class SettingsPage(Page):
 
         # ── Server ───────────────────────────────────────────────────────────
         srv_card = CollapsibleCard(body, c, t("Server"),
-                                   state_key="settings.server")
+                                   state_key="settings.server",
+                                   accent=c["panel_warn"])
         srv_card.pack(fill="x", padx=PAGE_PAD, pady=(0, 14))
         reset = PillButton(srv_card.header, c, t("Reset to defaults"), size=9, padx=12,
                            height=28, command=self._reset_server)
@@ -104,17 +107,21 @@ class SettingsPage(Page):
                                      str(s.parallel_slots))
         self._threads = self._entry(grid2, 5, t("CPU threads"),
                                     str(s.cpu_threads))
+        self._batch_threads = self._entry(grid2, 6, t("Batch CPU threads"),
+                                          str(s.batch_threads))
         self._api_key_real = s.api_key
         self._api_key_visible = cfg.show_api_details
-        self._api_key = self._api_key_control(grid2, 6)
-        self._stop_timeout = self._entry(grid2, 7, t("Stop timeout (s)"),
+        self._api_key = self._api_key_control(grid2, 7)
+        self._stop_timeout = self._entry(grid2, 8, t("Stop timeout (s)"),
                                          str(s.stop_timeout))
-        self._cont_batching = self._check(grid2, 8, t("Continuous batching"),
+        self._cont_batching = self._check(grid2, 9, t("Continuous batching"),
                                           s.cont_batching)
-        self._metrics = self._check(grid2, 9, t("Prometheus metrics"), s.metrics)
-        self._restart_crash = self._check(grid2, 10, t("Restart on crash"),
+        self._models_autoload = self._check(grid2, 10, t("Autoload models"),
+                                            s.models_autoload)
+        self._metrics = self._check(grid2, 11, t("Prometheus metrics"), s.metrics)
+        self._restart_crash = self._check(grid2, 12, t("Restart on crash"),
                                           s.restart_on_crash)
-        self._extra = self._entry(grid2, 11, t("Extra arguments"), s.extra_args,
+        self._extra = self._entry(grid2, 13, t("Extra arguments"), s.extra_args,
                                   wide=True)
         self._show_api_details.trace_add(
             "write", lambda *_: self._apply_api_details_visibility())
@@ -148,9 +155,11 @@ class SettingsPage(Page):
             "max_models": self._max_models.get(),
             "parallel": self._parallel.get(),
             "threads": self._threads.get(),
+            "batch_threads": self._batch_threads.get(),
             "api_key": self._current_api_key(),
             "stop_timeout": self._stop_timeout.get(),
             "cont_batching": self._cont_batching.get(),
+            "models_autoload": self._models_autoload.get(),
             "metrics": self._metrics.get(),
             "restart_crash": self._restart_crash.get(),
             "extra": self._extra.get(),
@@ -165,6 +174,7 @@ class SettingsPage(Page):
         if self._tray_var and d.get("tray") is not None:
             self._tray_var.set(d["tray"])
         self._cont_batching.set(d["cont_batching"])
+        self._models_autoload.set(d["models_autoload"])
         self._metrics.set(d["metrics"])
         self._restart_crash.set(d["restart_crash"])
         self._expose.set(d["expose"])
@@ -172,6 +182,7 @@ class SettingsPage(Page):
                        (self._host, "host"), (self._port, "port"),
                        (self._max_models, "max_models"),
                        (self._parallel, "parallel"), (self._threads, "threads"),
+                       (self._batch_threads, "batch_threads"),
                        (self._stop_timeout, "stop_timeout"),
                        (self._extra, "extra")):
             w.delete(0, "end")
@@ -331,11 +342,12 @@ class SettingsPage(Page):
 
     def _wire_autosave(self) -> None:
         entries = (self._max_dl, self._host, self._port, self._max_models,
-                   self._parallel, self._threads, self._api_key,
+                   self._parallel, self._threads, self._batch_threads, self._api_key,
                    self._stop_timeout, self._extra)
         combos = (self._language, self._expose)
         variables = (self._autostart, self._auto_check, self._cont_batching,
-                     self._metrics, self._restart_crash, self._show_api_details)
+                     self._models_autoload, self._metrics, self._restart_crash,
+                     self._show_api_details)
         if self._tray_var is not None:
             variables += (self._tray_var,)
         for entry in entries:
@@ -395,10 +407,13 @@ class SettingsPage(Page):
                                             cfg.server.parallel_slots, 1, 128),
                 "cpu_threads": self._int(self._threads,
                                          cfg.server.cpu_threads, 1, 256),
+                "batch_threads": self._int(self._batch_threads,
+                                            cfg.server.batch_threads, 1, 256),
                 "api_key": self._current_api_key(),
                 "stop_timeout": self._int(self._stop_timeout,
                                           cfg.server.stop_timeout, 1, 300),
                 "cont_batching": self._cont_batching.get(),
+                "models_autoload": self._models_autoload.get(),
                 "metrics": self._metrics.get(),
                 "restart_on_crash": self._restart_crash.get(),
                 "extra_args": self._extra.get().strip(),

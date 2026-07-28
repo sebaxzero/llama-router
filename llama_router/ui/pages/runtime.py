@@ -32,7 +32,8 @@ class RuntimePage(Page):
 
         # ── Installed ────────────────────────────────────────────────────────
         inst_card = CollapsibleCard(content, c, t("Installed"), pad=14,
-                                    state_key="runtime.installed")
+                                    state_key="runtime.installed",
+                                    accent=c["panel_ok"])
         inst_card.pack(fill="x", padx=PAGE_PAD, pady=(0, 12))
         inst_panel = inst_card.content
         self._activate_btn = PillButton(inst_card.header, c, t("Use this runtime"),
@@ -55,6 +56,7 @@ class RuntimePage(Page):
             self._inst.column(col, width=w, minwidth=w, anchor=anchor,
                               stretch=(col == "name"))
         self._inst.pack(fill="both", expand=True, padx=1, pady=1)
+        self._inst.tag_configure("active", foreground=c["ok"])
         self._inst.tag_configure("invalid", foreground=c["error"])
         enable_row_hover(self._inst, c)
         self._inst_empty = tk.Label(inst_panel,
@@ -64,7 +66,8 @@ class RuntimePage(Page):
 
         # ── Releases ─────────────────────────────────────────────────────────
         rel_card = CollapsibleCard(content, c, t("Available releases"), pad=14,
-                                   state_key="runtime.releases")
+                                   state_key="runtime.releases",
+                                   accent=c["panel_request"])
         rel_card.pack(fill="x", padx=PAGE_PAD, pady=(0, 12))
         rel_panel = rel_card.content
         self._release_cb = ttk.Combobox(rel_card.header, state="readonly", width=28,
@@ -123,7 +126,8 @@ class RuntimePage(Page):
         for r in runtimes:
             mark = "●" if (active and r.id == active.id) else ""
             state = t("invalid") if r.state == "invalid" else t("ready")
-            tags = ("invalid",) if r.state == "invalid" else ()
+            tags = (("invalid",) if r.state == "invalid" else
+                    (("active",) if active and r.id == active.id else ()))
             self._inst.insert("", "end", iid=r.id,
                               values=(mark, r.name, r.backend, state),
                               tags=tags)

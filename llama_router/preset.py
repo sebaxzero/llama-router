@@ -19,7 +19,7 @@ from llama_router.schemas import ModelEntry, ModelState, Profile
 # must only ever be written as "true" (via _write_conditional_params) and never
 # as "false" through the generic loop below.
 BOOLEAN_TOGGLE_KEYS = {
-    "mlock", "no-mmap", "swa-full", "no-kv-offload", "no-cache-prompt",
+    "swa-full", "no-kv-offload", "no-cache-prompt",
     "no-mmproj-offload", "load-on-startup", "cpu-moe", "embedding",
 }
 
@@ -32,11 +32,12 @@ _BLOCKED = {"host", "port", "api-key", "models-preset", "metrics",
             # Written conditionally by _write_conditional_params
             "no-mmproj-offload", "embedding",
             "spec-type", "spec-draft-model", "spec-draft-n-max",
+            "spec-draft-n-min", "spec-draft-device", "spec-draft-ngl",
             "cache-type-k-draft", "cache-type-v-draft",
             # Performance: only when true
             "mlock", "no-mmap", "cpu-moe",
             # Performance: only when fit is active
-            "fit-target",
+            "fit-target", "fit-ctx",
             # Cache: only when true
             "swa-full", "no-kv-offload", "no-cache-prompt",
             # Chat template: only when set and jinja isn't off
@@ -92,6 +93,17 @@ def _is_true(v: Any) -> bool:
     return v is True or str(v).lower() == "true"
 
 
+def _write_legacy_load_mode(section_dict: dict, params: dict) -> None:
+    if "load-mode" in params:
+        return
+    locked = _is_true(params.get("mlock"))
+    no_mmap = _is_true(params.get("no-mmap"))
+    if locked:
+        section_dict["load-mode"] = "mlock" if no_mmap else "mmap+mlock"
+    elif no_mmap:
+        section_dict["load-mode"] = "none"
+
+
 def _write_conditional_params(section_dict: dict, params: dict) -> None:
     """Write params that have conditional INI-write rules."""
     # ── Multimodal ──────────────────────────────────────────────────────────
@@ -106,7 +118,11 @@ def _write_conditional_params(section_dict: dict, params: dict) -> None:
         if draft_model:
             section_dict["spec-draft-model"] = draft_model
         n_max = params.get("spec-draft-n-max")
-        section_dict["spec-draft-n-max"] = str(int(n_max)) if n_max is not None else "2"
+        section_dict["spec-draft-n-max"] = str(int(n_max)) if n_max is not None else "3"
+        for key in ("spec-draft-n-min", "spec-draft-device", "spec-draft-ngl"):
+            value = params.get(key)
+            if value is not None and str(value).strip():
+                section_dict[key] = str(value)
 
     for key in ("cache-type-k-draft", "cache-type-v-draft"):
         val = str(params.get(key) or "")
@@ -114,10 +130,8 @@ def _write_conditional_params(section_dict: dict, params: dict) -> None:
             section_dict[key] = val
 
     # ── Performance ──────────────────────────────────────────────────────────
-    if _is_true(params.get("mlock")):
-        section_dict["mlock"] = "true"
-    if _is_true(params.get("no-mmap")):
-        section_dict["no-mmap"] = "true"
+    # Translate profiles saved before llama.cpp replaced these toggles.
+    _write_legacy_load_mode(section_dict, params)
     if _is_true(params.get("cpu-moe")):
         section_dict["cpu-moe"] = "true"
 
@@ -127,6 +141,9 @@ def _write_conditional_params(section_dict: dict, params: dict) -> None:
         ft = params.get("fit-target")
         if ft is not None and str(ft).strip():
             section_dict["fit-target"] = str(int(float(str(ft))))
+        fc = params.get("fit-ctx")
+        if fc is not None and str(fc).strip():
+            section_dict["fit-ctx"] = str(int(float(str(fc))))
 
     # ── Cache ────────────────────────────────────────────────────────────────
     for key in ("swa-full", "no-kv-offload", "no-cache-prompt"):
@@ -168,6 +185,7 @@ def generate(
     for k, v in global_params.items():
         if k not in _BLOCKED and k not in _PROFILE_ONLY_KEYS:
             cfg["*"][k] = _bool_str(v)
+    _write_legacy_load_mode(cfg["*"], global_params)
 
     enabled = [m for m in models if m.enabled and m.state == ModelState.VALID]
 

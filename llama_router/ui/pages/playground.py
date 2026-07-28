@@ -70,7 +70,7 @@ class PlaygroundPage(Page):
         model_wrap = tk.Frame(head.actions, bg=c["bg"])
         model_wrap.pack(side="left", padx=(0, 8))
         tk.Label(model_wrap, text=t("Model").upper(), bg=c["bg"],
-                 fg=c["faint"], font=theme.mono(7, "bold")).pack(anchor="w")
+                 fg=c["panel_accent"], font=theme.mono(7, "bold")).pack(anchor="w")
         self._model = ttk.Combobox(model_wrap, state="readonly", width=22,
                                    font=theme.mono(9))
         self._model.pack()
@@ -93,7 +93,7 @@ class PlaygroundPage(Page):
         content = scroll.body
 
         # ── Offline banner ───────────────────────────────────────────────────
-        self._banner = Card(content, c, pad=12)
+        self._banner = Card(content, c, pad=12, border=c["panel_warn"])
         brow = tk.Frame(self._banner.body, bg=c["surface"])
         brow.pack(fill="x")
         tk.Label(brow, text=t("The server is not running — start it to chat."),
@@ -107,7 +107,7 @@ class PlaygroundPage(Page):
         self._sys_card = CollapsibleCard(
             content, c, t("System prompt"), expanded=False, pad=12,
             on_toggle=lambda open_: setattr(self, "_sys_open", open_),
-            state_key="playground.system_prompt")
+            state_key="playground.system_prompt", accent=c["panel_num"])
         self._sys_open = self._sys_card.is_open
         self._sys_card.pack(fill="x", padx=PAGE_PAD)
         self._sysrow = self._sys_card
@@ -122,16 +122,18 @@ class PlaygroundPage(Page):
         body.pack(fill="both", expand=True, padx=PAGE_PAD, pady=(10, 0))
 
         self._sidebar = tk.Frame(body, bg=c["surface"],
-                                 highlightbackground=c["border"],
+                                 highlightbackground=c["panel_request"],
                                  highlightthickness=1, width=210)
         self._sidebar.pack_propagate(False)
-        section_label(self._sidebar, c, t("Saved sessions")).pack(
+        section_label(self._sidebar, c, t("Saved sessions"),
+                      c["panel_request"]).pack(
             anchor="w", padx=10, pady=(9, 6))
         self._sess_list = tk.Frame(self._sidebar, bg=c["surface"])
         self._sess_list.pack(fill="both", expand=True, padx=6, pady=(0, 8))
 
         panel = tk.Frame(body, bg=c["surface"],
-                         highlightbackground=c["border"], highlightthickness=1)
+                         highlightbackground=c["panel_accent"],
+                         highlightthickness=1)
         panel.pack(side="right", fill="both", expand=True)
         self._text = tk.Text(panel, bg=c["inset"], fg=c["text"], bd=0,
                              padx=12, pady=10, font=theme.ui(10), wrap="word",
@@ -163,7 +165,7 @@ class PlaygroundPage(Page):
                               insertbackground=c["accent"], bd=0, padx=10,
                               pady=7, font=theme.ui(10), wrap="word",
                               highlightthickness=1,
-                              highlightbackground=c["border"])
+                              highlightbackground=c["panel_accent"])
         self._input.pack(side="left", fill="both", expand=True)
         self._input.bind("<Return>", self._on_return)
         btns = tk.Frame(row, bg=c["bg"])
@@ -523,10 +525,15 @@ class PlaygroundPage(Page):
                      wraplength=180, justify="left").pack(anchor="w", padx=6)
             return
         for s in rows:
-            row = tk.Frame(self._sess_list, bg=c["surface"], cursor="hand2")
+            selected = s["id"] == self._session.get("id")
+            row = tk.Frame(
+                self._sess_list, bg=c["surface"], cursor="hand2",
+                highlightbackground=c["request"] if selected else c["border"],
+                highlightthickness=1)
             row.pack(fill="x", pady=1)
             name = tk.Label(row, text=s.get("name") or s["id"], bg=c["surface"],
-                            fg=c["text"], font=theme.ui(9), anchor="w")
+                            fg=c["request"] if selected else c["text"],
+                            font=theme.ui(9), anchor="w")
             name.pack(fill="x", padx=8, pady=(4, 0))
             meta = tk.Label(row, text=f"{len(s.get('messages') or [])} msg  ·  "
                                       f"{s.get('updated_at', '')}",

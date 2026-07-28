@@ -763,6 +763,7 @@ class ServerManager:
             "--models-max", str(srv.max_models),
             "--parallel", str(srv.parallel_slots),
             "--threads", str(srv.cpu_threads),
+            "--threads-batch", str(srv.batch_threads),
         ]
         if srv.api_key:
             cmd += ["--api-key", srv.api_key]
@@ -770,6 +771,8 @@ class ServerManager:
             cmd += ["--metrics"]
         if not srv.cont_batching:
             cmd += ["--no-cont-batching"]
+        if not srv.models_autoload:
+            cmd += ["--no-models-autoload"]
         if srv.extra_args:
             cmd += shlex.split(srv.extra_args)
         return cmd

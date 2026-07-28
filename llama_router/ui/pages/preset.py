@@ -21,7 +21,9 @@ class PresetPage(Page):
         if embedded:
             toolbar = tk.Frame(self, bg=c["bg"])
             toolbar.pack(fill="x", padx=PAGE_PAD, pady=(0, 10))
-            section_label(toolbar, c, "models-preset.ini").pack(side="left")
+            section_label(toolbar, c, "models-preset.ini",
+                          c["panel_request"]).pack(
+                side="left")
             actions = tk.Frame(toolbar, bg=c["bg"])
             actions.pack(side="right")
         else:
@@ -46,7 +48,8 @@ class PresetPage(Page):
         self._state_lbl.pack(side="right")
 
         panel = tk.Frame(self, bg=c["surface"],
-                         highlightbackground=c["border"], highlightthickness=1)
+                         highlightbackground=c["panel_request"],
+                         highlightthickness=1)
         panel.pack(fill="both", expand=True, padx=PAGE_PAD, pady=(0, PAGE_PAD))
         self._text = tk.Text(panel, bg=c["inset"], fg=c["text"], bd=0,
                              padx=10, pady=8, font=theme.mono(9), wrap="none",

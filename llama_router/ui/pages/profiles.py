@@ -6,15 +6,17 @@ from __future__ import annotations
 import json
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
+from llama_router.core.utils import fmt_bytes
 from llama_router.i18n import t
 from llama_router.ui import theme
 from llama_router.ui.pages.base import PAGE_PAD, Page
 from llama_router.ui.pages.models import ModelsPage
 from llama_router.ui.pages.preset import PresetPage
-from llama_router.ui.widgets import (AutoScrollbar, NavItem, PillButton, ScrollFrame, section_label,
-                                    enable_row_hover)
+from llama_router.ui.widgets import (AutoScrollbar, CollapsibleCard, NavItem,
+                                     PillButton, ScrollFrame, Tooltip,
+                                     section_label, enable_row_hover)
 
 _CACHE_TYPES = ["f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0",
                 "iq4_nl"]
@@ -52,7 +54,11 @@ _LLAMA_DEFAULTS: dict[str, int | float | str] = {
     "dry-allowed-length": 2,
     "dry-penalty-last-n": -1,
     "cache-reuse": 0,
+    "cache-ram": 8192,
     "main-gpu": 0,
+    "fit-ctx": 4096,
+    "reasoning-budget": -1,
+    "spec-draft-n-min": 0,
 }
 
 # Field kinds: int | float | str | bool | choice | combo | file
@@ -72,8 +78,8 @@ _SECTIONS: list[tuple[str, list[tuple]]] = [
     ]),
     ("Sampling", [
         ("temp", "Temperature", "float", None),
-        ("top-k", "Top-K", "int", None),
         ("top-p", "Top-P", "float", None),
+        ("top-k", "Top-K", "int", None),
         ("min-p", "Min-P", "float", None),
         ("typical-p", "Typical-P", "float", None),
         ("top-nsigma", "Top-N sigma", "float", None),
@@ -97,6 +103,9 @@ _SECTIONS: list[tuple[str, list[tuple]]] = [
     ("Chat & templates", [
         ("jinja", "Jinja templates", "choice", (["", "true", "false"], "")),
         ("reasoning", "Reasoning", "choice", (["", "auto", "on", "off"], "")),
+        ("reasoning-format", "Reasoning format", "choice",
+         (["auto", "none", "deepseek", "deepseek-legacy"], "auto")),
+        ("reasoning-budget", "Reasoning budget", "int", None),
         ("chat-template-file", "Chat template file", "file", None),
         ("chat-template-kwargs", "Template kwargs (JSON)", "str", None),
     ]),
@@ -104,6 +113,7 @@ _SECTIONS: list[tuple[str, list[tuple]]] = [
         ("cache-type-k", "K cache type", "choice", (_CACHE_TYPES, "f16")),
         ("cache-type-v", "V cache type", "choice", (_CACHE_TYPES, "f16")),
         ("cache-reuse", "Cache reuse", "int", None),
+        ("cache-ram", "Shared cache limit (MiB)", "int", None),
         ("swa-checkpoints", "SWA checkpoints", "int", None),
         ("swa-full", "Full SWA cache", "bool", None),
         ("no-kv-offload", "Keep KV cache on CPU", "bool", None),
@@ -112,10 +122,12 @@ _SECTIONS: list[tuple[str, list[tuple]]] = [
     ("Performance", [
         ("n-cpu-moe", "MoE CPU experts", "int", None),
         ("cpu-moe", "All MoE experts on CPU", "bool", None),
-        ("mlock", "Lock model in RAM", "bool", None),
-        ("no-mmap", "Disable mmap", "bool", None),
+        ("load-mode", "Load mode", "choice",
+         (["mmap", "none", "mlock", "mmap+mlock", "dio"], "mmap")),
+        ("device", "Devices", "str", None),
         ("fit", "Auto-fit to VRAM", "choice", (["on", "off"], "on")),
         ("fit-target", "Fit target (MiB)", "int", None),
+        ("fit-ctx", "Minimum fit context", "int", None),
         ("main-gpu", "Main GPU", "int", None),
         ("split-mode", "Split mode", "choice", (["layer", "row", "none"], "layer")),
         ("tensor-split", "Tensor split", "str", None),
@@ -132,8 +144,12 @@ _SECTIONS: list[tuple[str, list[tuple]]] = [
     ]),
     ("Speculative decoding", [
         ("spec-type", "Type", "combo", (_SPEC_TYPES, "none")),
-        ("spec-draft-model", "Draft model", "file", "_detect_draft"),
         ("spec-draft-n-max", "Draft tokens (n-max)", "int", None),
+        ("spec-draft-n-min", "Draft tokens (n-min)", "int", None),
+        ("spec-draft-model", "Draft model", "file", "_detect_draft"),
+        ("spec-draft-device", "Draft devices", "str", None),
+        ("spec-draft-ngl", "Draft GPU layers", "combo",
+         (["auto", "all"], "auto")),
         ("cache-type-k-draft", "Draft K cache", "choice", (_DRAFT_CACHE_TYPES, "")),
         ("cache-type-v-draft", "Draft V cache", "choice", (_DRAFT_CACHE_TYPES, "")),
     ]),
@@ -145,19 +161,27 @@ _SECTIONS: list[tuple[str, list[tuple]]] = [
     ]),
 ]
 
-# Dense numeric groups read well three-across.  Sections with longer labels,
-# editable strings or broader choices deliberately keep two columns.
+# Compact values pair naturally; sliders, paths and free text span the card.
 _SECTION_COLUMNS = {
-    "Core": 3,
-    "Sampling": 3,
+    "Core": 2,
+    "Sampling": 2,
     "Repetition": 2,
     "Chat & templates": 2,
     "KV cache": 2,
     "Performance": 2,
-    "RoPE": 3,
-    "Multimodal": 2,
+    "RoPE": 2,
+    "Multimodal": 1,
     "Speculative decoding": 2,
     "Router": 2,
+}
+
+# Controls that need the whole card width to remain readable.  Everything
+# else flows in the section's compact column count above.
+_WIDE_FIELDS = {
+    "ctx-size", "temp", "top-p",
+    "chat-template-file", "chat-template-kwargs",
+    "dry-sequence-breaker", "tensor-split", "device", "mmproj",
+    "spec-draft-model", "spec-draft-device",
 }
 
 # Keep the controls most often tuned for a model in the always-visible part of
@@ -165,8 +189,129 @@ _SECTION_COLUMNS = {
 # changes the form layout, so existing profiles and generated presets are
 # unaffected.
 _QUICK_FIELD_KEYS = {
-    "ctx-size", "flash-attn", "temp", "top-k", "top-p",
-    "cache-type-k", "cache-type-v", "load-on-startup",
+    "ctx-size", "flash-attn", "cache-type-k", "cache-type-v",
+    "temp", "top-k", "top-p", "n-gpu-layers", "n-cpu-moe",
+    "batch-size", "ubatch-size", "load-mode",
+}
+
+_SLIDER_FIELDS = {
+    "ctx-size": (512, 32768, 512, "int"),
+    "temp": (0.0, 2.0, 0.05, "float"),
+    "top-p": (0.0, 1.0, 0.01, "float"),
+}
+
+_QUICK_GROUPS = [
+    ("Capacity", ["ctx-size", "cache-type-k", "cache-type-v", "flash-attn"]),
+    ("Sampling", ["temp", "top-k", "top-p"]),
+    ("Runtime", ["n-gpu-layers", "n-cpu-moe", "batch-size", "ubatch-size",
+                 "load-mode"]),
+]
+
+_QUICK_COLUMNS = {"Capacity": 2, "Sampling": 1, "Runtime": 2}
+
+_GROUP_ACCENTS = {
+    "Capacity": "panel_accent",
+    "Sampling": "panel_request",
+    "Runtime": "panel_ok",
+}
+
+_ADVANCED_GROUPS = {
+    "Capacity": {"Core", "KV cache", "RoPE"},
+    "Sampling": {"Sampling", "Repetition"},
+    "Runtime": {"Chat & templates", "Performance", "Multimodal",
+                "Speculative decoding", "Router"},
+}
+
+_TAB_ACCENTS = {
+    "Core": "panel_accent",
+    "Sampling": "panel_request",
+    "Repetition": "panel_warn",
+    "Chat & templates": "panel_num",
+    "KV cache": "panel_ok",
+    "Performance": "panel_accent",
+    "RoPE": "panel_error",
+    "Multimodal": "panel_request",
+    "Speculative decoding": "panel_warn",
+    "Router": "panel_ok",
+}
+
+_SECTION_KEYS = {title: {field[0] for field in fields}
+                 for title, fields in _SECTIONS}
+_GROUP_KEYS = {
+    group: set().union(*(_SECTION_KEYS[title] for title in sections))
+           - {"load-on-startup"}
+    for group, sections in _ADVANCED_GROUPS.items()
+}
+
+_PARAM_HELP = {
+    "ctx-size": "Prompt context size. Zero uses the value stored in the model; larger contexts use more KV-cache memory.",
+    "n-predict": "Maximum tokens to generate. -1 allows unlimited generation.",
+    "n-gpu-layers": "Maximum model layers stored in VRAM. More layers usually improve speed but consume more VRAM.",
+    "n-cpu-moe": "Number of Mixture-of-Experts layers kept on CPU to reduce VRAM use.",
+    "batch-size": "Logical prompt-processing batch. Larger values may improve throughput but use more memory.",
+    "ubatch-size": "Physical prompt-processing batch. It controls peak working memory and should not exceed Batch size.",
+    "flash-attn": "Enables fused attention kernels. Auto lets llama.cpp decide based on backend and model support.",
+    "seed": "Random-number seed. -1 chooses a random seed for each server start.",
+    "temp": "Sampling randomness. Lower values are more deterministic; higher values are more varied.",
+    "top-k": "Restricts sampling to the K most likely tokens. Zero disables the filter.",
+    "top-p": "Keeps the smallest token set whose cumulative probability reaches P. 1 disables the filter.",
+    "min-p": "Drops tokens whose probability is below this fraction of the most likely token. Zero disables it.",
+    "typical-p": "Locally typical sampling threshold. 1 disables this filter.",
+    "top-nsigma": "Keeps tokens within N standard deviations of the top logit. -1 disables this filter.",
+    "xtc-probability": "Probability of applying XTC sampling. Zero disables XTC.",
+    "xtc-threshold": "Probability threshold used by XTC to remove likely tokens. 1 disables the threshold.",
+    "mirostat": "Adaptive perplexity sampling: 0 off, 1 Mirostat, 2 Mirostat 2.0. It ignores Top-K, Top-P and Typical-P.",
+    "mirostat-lr": "Mirostat learning rate (eta). Higher values adapt sampling more aggressively.",
+    "mirostat-ent": "Target entropy (tau) maintained by Mirostat.",
+    "repeat-last-n": "Recent tokens checked for repetition. 0 disables it; -1 uses the full context.",
+    "repeat-penalty": "Penalty applied to repeated tokens. 1 disables the penalty.",
+    "presence-penalty": "Penalizes a token once if it has appeared. Zero disables it.",
+    "frequency-penalty": "Penalizes tokens in proportion to how often they appeared. Zero disables it.",
+    "dry-multiplier": "Strength of DRY repetition suppression. Zero disables DRY.",
+    "dry-base": "Exponential base controlling how quickly the DRY penalty grows with repeated sequence length.",
+    "dry-allowed-length": "Repeated sequence length allowed before DRY begins penalizing it.",
+    "dry-penalty-last-n": "Recent tokens searched by DRY. -1 uses the full context; 0 disables the search.",
+    "dry-sequence-breaker": "Sequence boundary for DRY. Setting one replaces the default breakers; use 'none' for none.",
+    "jinja": "Enables llama.cpp's Jinja chat-template engine. Required for custom template files and tool use.",
+    "reasoning": "Controls reasoning/thinking: Auto detects support from the model's chat template.",
+    "reasoning-format": "Controls where parsed thoughts are returned: content, reasoning_content, or both for legacy clients.",
+    "reasoning-budget": "Maximum reasoning tokens. -1 is unrestricted; 0 ends reasoning immediately.",
+    "chat-template-file": "Custom Jinja chat-template file. The model's embedded template is used when empty.",
+    "chat-template-kwargs": "Extra values passed to the chat template as a valid JSON object.",
+    "cache-type-k": "Data type for the key side of the KV cache. Quantized types reduce memory at some quality cost.",
+    "cache-type-v": "Data type for the value side of the KV cache. Quantized types reduce memory at some quality cost.",
+    "cache-reuse": "Minimum cached token chunk to reuse via KV shifting. Zero disables reuse; prompt caching must be on.",
+    "cache-ram": "Maximum shared prompt-cache size in MiB. -1 is unlimited; 0 disables the shared cache.",
+    "swa-checkpoints": "Maximum context checkpoints kept per server slot for Sliding Window Attention.",
+    "swa-full": "Uses a full-size Sliding Window Attention cache, increasing memory use.",
+    "no-kv-offload": "Keeps the KV cache on CPU instead of offloading it to the GPU.",
+    "no-cache-prompt": "Disables prompt caching, so repeated prompt prefixes are processed again.",
+    "cpu-moe": "Keeps all Mixture-of-Experts weights on CPU to save VRAM, usually at a speed cost.",
+    "load-mode": "Model loading strategy. This is the supported replacement for the older mmap and mlock toggles.",
+    "device": "Comma-separated devices used for model offloading. Leave empty for automatic selection; use 'none' for CPU only.",
+    "fit": "Lets llama.cpp adjust unset arguments to fit available device memory.",
+    "fit-target": "Free-memory margin, in MiB per device, reserved by automatic fitting.",
+    "fit-ctx": "Smallest context size automatic fitting may select when reducing memory use.",
+    "main-gpu": "GPU index used with single-GPU split mode, or for intermediate results and KV in row mode.",
+    "split-mode": "Multi-GPU distribution: layer pipelines layers and KV; row splits weights; none uses one GPU.",
+    "tensor-split": "Relative model allocation per GPU, comma-separated; for example, 3,1 assigns a 75/25 split.",
+    "rope-scaling": "RoPE context-scaling method. Leave empty to use the model's setting.",
+    "rope-freq-base": "RoPE base frequency for NTK-aware scaling. Empty uses the value stored in the model.",
+    "rope-freq-scale": "RoPE frequency scale; a value N expands context by a factor of 1/N.",
+    "mmproj": "Multimodal projector file paired with the model for image input.",
+    "no-mmproj-offload": "Keeps the multimodal projector on CPU instead of offloading it to the GPU.",
+    "spec-type": "One or more speculative-decoding strategies used to draft tokens before verification.",
+    "spec-draft-n-max": "Maximum tokens proposed by the draft model per speculative-decoding step.",
+    "spec-draft-n-min": "Minimum draft tokens required for a speculative-decoding step.",
+    "spec-draft-model": "Companion model used to draft speculative tokens before the main model verifies them.",
+    "spec-draft-device": "Comma-separated devices used to offload the draft model independently of the main model.",
+    "spec-draft-ngl": "Maximum draft-model layers stored in VRAM: an exact number, auto, or all.",
+    "cache-type-k-draft": "Data type for the draft model's key KV cache.",
+    "cache-type-v-draft": "Data type for the draft model's value KV cache.",
+    "load-on-startup": "Loads this route when llama-server starts instead of waiting for its first request.",
+    "embedding": "Restricts this route to embeddings. Enable only for a dedicated embedding model.",
+    "stop-timeout": "Seconds the router waits after requesting unload before forcefully stopping this model.",
+    "sleep-idle-seconds": "Unloads the model and its KV cache after this many idle seconds. -1 or empty disables sleep.",
 }
 
 # The sampler params a sampling preset owns — applying a preset clears all of
@@ -181,6 +326,27 @@ _SAMPLING_KEYS = [
 
 # Keys owned by dedicated fields — kept out of the free-form box.
 _STRUCTURED = {f[0] for _, fields in _SECTIONS for f in fields}
+_LEGACY_LOAD_KEYS = {"mlock", "no-mmap"}
+
+
+def _migrate_load_mode(params: dict) -> dict:
+    """Translate legacy loading toggles for display without mutating storage."""
+    migrated = dict(params)
+    if "load-mode" not in migrated:
+        locked = str(migrated.get("mlock", "")).lower() == "true"
+        no_mmap = str(migrated.get("no-mmap", "")).lower() == "true"
+        if locked:
+            migrated["load-mode"] = "mlock" if no_mmap else "mmap+mlock"
+        elif no_mmap:
+            migrated["load-mode"] = "none"
+    for key in _LEGACY_LOAD_KEYS:
+        migrated.pop(key, None)
+    return migrated
+
+
+def _context_limit(meta: dict) -> int:
+    """Useful slider ceiling, preferring the GGUF's trained context."""
+    return max(4096, int(meta.get("ctx", 0) or 0) or 32768)
 
 
 def _parse_extra(text: str) -> dict:
@@ -202,7 +368,7 @@ def _parse_extra(text: str) -> dict:
 
 def _format_extra(params: dict) -> str:
     return "\n".join(f"{k} = {v}" for k, v in params.items()
-                     if k not in _STRUCTURED)
+                     if k not in _STRUCTURED and k not in _LEGACY_LOAD_KEYS)
 
 
 def _load_sampling_presets() -> list[dict]:
@@ -237,8 +403,8 @@ class ProfilesPage(Page):
                         pady=(0, PAGE_PAD))
         cols = self._cols.body
         cols.columnconfigure(0, weight=0)
-        cols.columnconfigure(1, weight=1, uniform="profile-detail")
-        cols.columnconfigure(2, weight=1, uniform="profile-detail")
+        cols.columnconfigure(1, weight=3)
+        cols.columnconfigure(2, weight=2)
         cols.rowconfigure(0, weight=1)
 
         # ── Left: models → profiles tree ─────────────────────────────────────
@@ -246,8 +412,14 @@ class ProfilesPage(Page):
         left = self._profile_list
         left.grid(row=0, column=0, sticky="nw", padx=(0, 14))
 
-        treepanel = tk.Frame(left, bg=c["surface"])
+        treepanel = tk.Frame(left, bg=c["surface"],
+                             highlightbackground=c["panel_accent"],
+                             highlightthickness=1)
         treepanel.pack(fill="x")
+        tk.Label(treepanel, text=theme.track(t("Models & profiles")),
+                 bg=c["surface"], fg=c["panel_accent"],
+                 font=theme.mono(8, "bold"),
+                 padx=10, pady=9).pack(anchor="w")
         self._tree = ttk.Treeview(treepanel, columns=("on",), show="tree",
                                   selectmode="browse")
         self._tree.column("#0", width=162)
@@ -258,6 +430,8 @@ class ProfilesPage(Page):
         vbar.pack(side="right", fill="y")
         self._tree.pack(fill="x", padx=1, pady=1)
         self._tree.tag_configure("model", foreground=c["muted"])
+        self._tree.tag_configure("model-active", foreground=c["accent"])
+        self._tree.tag_configure("active", foreground=c["accent_hi"])
         self._tree.tag_configure("off", foreground=c["faint"])
         self._tree.bind("<Button-1>", self._on_tree_click)
         self._tree.bind("<<TreeviewSelect>>", lambda e: self._on_select())
@@ -265,14 +439,15 @@ class ProfilesPage(Page):
 
         lbtns = tk.Frame(left, bg=c["bg"])
         lbtns.pack(fill="x", pady=(10, 0))
-        PillButton(lbtns, c, t("New"), size=9, padx=12, height=28,
+        PillButton(lbtns, c, t("New"), kind="primary", size=9, padx=12, height=28,
                    command=self._new).pack(side="left")
         PillButton(lbtns, c, t("Delete"), size=9, padx=12, height=28,
                    command=self._delete).pack(side="left", padx=(6, 0))
 
         lbtns2 = tk.Frame(left, bg=c["bg"])
         lbtns2.pack(fill="x", pady=(6, 0))
-        PillButton(lbtns2, c, t("Activate all"), size=9, padx=12, height=28,
+        PillButton(lbtns2, c, t("Activate all"), kind="accent",
+                   size=9, padx=12, height=28,
                    command=lambda: self._set_all_active(True)).pack(
                        anchor="w")
         PillButton(lbtns2, c, t("Deactivate all"), size=9, padx=12, height=28,
@@ -281,7 +456,7 @@ class ProfilesPage(Page):
 
         # ── Right: editor ────────────────────────────────────────────────────
         self._editor = tk.Frame(cols, bg=c["surface"],
-                                highlightbackground=c["border"],
+                                highlightbackground=c["panel_accent"],
                                 highlightthickness=1)
         self._editor.grid(row=0, column=1, sticky="nsew", padx=(0, 12))
         self._fields: dict[str, tuple] = {}  # key → (kind, widget-or-var, extra)
@@ -371,14 +546,33 @@ class ProfilesPage(Page):
 
         top = tk.Frame(outer, bg=c["surface"])
         top.pack(fill="x")
-        section_label(top, c, t("Profile")).pack(side="left")
+        section_label(top, c, t("Profile"), c["panel_accent"]).pack(side="left")
         self._save_state = tk.Label(top, text=t("Saved automatically"),
                                     bg=c["surface"], fg=c["faint"],
                                     font=theme.ui(8))
         self._save_state.pack(side="right")
+        reset_profile = PillButton(
+            top, c, t("Reset profile"), size=8, padx=10, height=26,
+            command=self._reset_profile)
+        reset_profile.pack(side="right", padx=(0, 10))
+        Tooltip(reset_profile, c,
+                t("Clear every custom parameter while keeping the profile name and route alias."))
 
         self._copy_map: dict[str, str] = {}  # display → profile_id
         self._presets = _load_sampling_presets()
+
+        self._model_summary = tk.Frame(
+            outer, bg=c["surface_hi"], highlightbackground=c["panel_accent"],
+            highlightthickness=1)
+        self._model_summary.pack(fill="x", pady=(12, 8))
+        self._model_name = tk.Label(
+            self._model_summary, text="", bg=c["surface_hi"], fg=c["text"],
+            font=theme.ui(11, "bold"), anchor="w")
+        self._model_name.pack(fill="x", padx=12, pady=(9, 2))
+        self._model_meta = tk.Label(
+            self._model_summary, text="", bg=c["surface_hi"], fg=c["muted"],
+            font=theme.mono(8), anchor="w")
+        self._model_meta.pack(fill="x", padx=12, pady=(0, 9))
 
         # Identity row stays fixed above the scrolling parameter form.
         ident = tk.Frame(outer, bg=c["surface"])
@@ -395,27 +589,74 @@ class ProfilesPage(Page):
         self._active = tk.BooleanVar()
         ttk.Checkbutton(ident, variable=self._active,
                         takefocus=False).grid(row=2, column=1, sticky="w")
+        self._label(ident, 3, 0, t("Load on startup"))
+        self._make_field(ident, 3, 1, "load-on-startup", "bool", None)
 
         # The essential inference controls stay visible.  The complete form
         # remains available below for less common llama-server options.
-        section_label(outer, c, t("Core")).pack(anchor="w", pady=(10, 2))
-        quick = tk.Frame(outer, bg=c["surface"])
-        quick.pack(fill="x")
-        # Three columns leave enough room for longer labels such as
-        # "Load on startup" when the window is narrow.
-        for col in range(3):
-            quick.columnconfigure(col, weight=1, uniform="quick-param-cell")
-        quick_fields = [field for _, fields in _SECTIONS for field in fields
-                        if field[0] in _QUICK_FIELD_KEYS]
-        for index, (key, label, kind, extra) in enumerate(quick_fields):
-            row, col = divmod(index, 3)
-            cell = tk.Frame(quick, bg=c["surface"])
-            cell.grid(row=row, column=col, sticky="ew", padx=(0, 6))
-            self._label(cell, 0, 0, t(label))
-            self._make_field(cell, 1, 0, key, kind, extra)
+        section_label(outer, c, t("Parameters"), c["panel_accent"]).pack(
+            anchor="w", pady=(12, 4))
+        quick_fields = {field[0]: field for _, fields in _SECTIONS
+                        for field in fields if field[0] in _QUICK_FIELD_KEYS}
+        self._sliders: dict[str, tuple[ttk.Scale, tk.Label, object]] = {}
+        self._quick_cards: list[CollapsibleCard] = []
+        self._quick_panels: list[tk.Frame] = []
+        self._advanced_groups: dict[str, tk.Frame] = {}
+        self._advanced_visible = False
+        for group_title, keys in _QUICK_GROUPS:
+            card = CollapsibleCard(
+                outer, c, t(group_title), expanded=True, pad=12,
+                state_key=f"profile-group-{group_title}",
+                accent=c[_GROUP_ACCENTS[group_title]])
+            card.pack(fill="x", pady=(0, 6))
+            self._quick_cards.append(card)
+            reset_group = PillButton(
+                card.header, c, t("Reset"), size=7, padx=8, height=24,
+                command=lambda keys=_GROUP_KEYS[group_title]:
+                self._reset_params(keys))
+            reset_group.pack(side="right", padx=(0, 6))
+            Tooltip(reset_group, c,
+                    t("Reset every parameter in this category."))
+            panel = tk.Frame(card.content, bg=c["surface"])
+            panel.pack(fill="x")
+            self._quick_panels.append(panel)
+            columns = _QUICK_COLUMNS[group_title]
+            for col in range(columns):
+                panel.columnconfigure(col, weight=1,
+                                      uniform="quick-param-cell")
+            row = 0
+            slot = 0
+            for key in keys:
+                _key, label, kind, extra = quick_fields[key]
+                wide = key in _WIDE_FIELDS
+                if wide and slot:
+                    row += 1
+                    slot = 0
+                cell = tk.Frame(panel, bg=c["surface"])
+                cell.grid(row=row, column=0 if wide else slot,
+                          columnspan=columns if wide else 1, sticky="ew",
+                          padx=(0, 8), pady=(0, 7))
+                cell.columnconfigure(0, weight=1)
+                self._label(cell, 0, 0, t(label))
+                if key in _SLIDER_FIELDS:
+                    self._make_slider_field(cell, key, kind, extra)
+                else:
+                    self._make_field(cell, 1, 0, key, kind, extra)
+                if wide:
+                    row += 1
+                else:
+                    slot += 1
+                    if slot == columns:
+                        row += 1
+                        slot = 0
+            self._advanced_groups[group_title] = tk.Frame(
+                card.content, bg=c["surface"])
+
+        default_fields = dict(self._fields)
+        default_sliders = dict(self._sliders)
 
         pickers = tk.Frame(outer, bg=c["surface"])
-        pickers.pack(fill="x", pady=(8, 0))
+        pickers.pack(fill="x", pady=(8, 8), before=self._quick_cards[0])
         pickers.columnconfigure(0, weight=1, uniform="profile-picker")
         pickers.columnconfigure(1, weight=1, uniform="profile-picker")
         self._preset_cb = ttk.Combobox(pickers, state="readonly", width=18,
@@ -428,7 +669,7 @@ class ProfilesPage(Page):
         self._copy_cb.bind("<<ComboboxSelected>>", self._on_copy_from)
 
         toggle = tk.Frame(outer, bg=c["surface"], cursor="hand2")
-        toggle.pack(fill="x", pady=(8, 0))
+        toggle.pack(fill="x", pady=(0, 8), before=self._quick_cards[0])
         self._params_toggle = tk.Label(
             toggle, text="▾  " + t("Advanced parameters"),
             bg=c["surface"], fg=c["muted"], font=theme.mono(8, "bold"),
@@ -437,27 +678,38 @@ class ProfilesPage(Page):
         for widget in (toggle, self._params_toggle):
             widget.bind("<Button-1>", lambda _e: self._toggle_params())
 
-        self._params_sc = tk.Frame(outer, bg=c["surface"])
-        body = self._params_sc
-
         for title, fields in _SECTIONS:
-            section_label(body, c, t(title)).pack(anchor="w", pady=(12, 2))
-            grid = tk.Frame(body, bg=c["surface"])
-            grid.pack(fill="x")
+            group_title = next(group for group, sections in
+                               _ADVANCED_GROUPS.items() if title in sections)
+            body = self._advanced_groups[group_title]
+            advanced_fields = [field for field in fields
+                               if field[0] != "load-on-startup"]
+            if not advanced_fields:
+                continue
+            subcard = CollapsibleCard(
+                body, c, t(title), expanded=False, pad=10,
+                state_key=f"profile-advanced-{title}",
+                accent=c[_TAB_ACCENTS[title]])
+            subcard.pack(fill="x", pady=(6, 0))
+            reset_section = PillButton(
+                subcard.header, c, t("Reset"), size=7, padx=8, height=22,
+                command=lambda keys=_SECTION_KEYS[title] - {"load-on-startup"}:
+                self._reset_params(keys))
+            reset_section.pack(side="right", padx=(0, 6))
+            Tooltip(reset_section, c,
+                    t("Reset every parameter in this section."))
+            grid = subcard.content
             columns = _SECTION_COLUMNS[title]
             for col in range(columns):
                 grid.columnconfigure(col, weight=1, uniform="param-cell")
 
-            # Boolean switches are easier to scan as one vertical group, so
-            # render every other field first and append switches afterwards.
-            advanced_fields = [field for field in fields
-                               if field[0] not in _QUICK_FIELD_KEYS]
             values = [field for field in advanced_fields if field[2] != "bool"]
             switches = [field for field in advanced_fields if field[2] == "bool"]
             row = 0
             slot = 0
             for key, label, kind, extra in values:
-                if kind == "file":
+                wide = kind == "file" or key in _WIDE_FIELDS
+                if wide:
                     if slot:
                         row += 1
                         slot = 0
@@ -466,13 +718,20 @@ class ProfilesPage(Page):
                               sticky="ew", padx=(0, 6))
                     cell.columnconfigure(0, weight=1)
                     self._label(cell, 0, 0, t(label))
-                    self._make_field(cell, 1, 0, key, kind, extra)
+                    if key in _SLIDER_FIELDS:
+                        self._make_slider_field(cell, key, kind, extra)
+                    else:
+                        self._make_field(cell, 1, 0, key, kind, extra)
                     row += 1
                     continue
                 cell = tk.Frame(grid, bg=c["surface"])
                 cell.grid(row=row, column=slot, sticky="ew", padx=(0, 6))
+                cell.columnconfigure(0, weight=1)
                 self._label(cell, 0, 0, t(label))
-                self._make_field(cell, 1, 0, key, kind, extra)
+                if key in _SLIDER_FIELDS:
+                    self._make_slider_field(cell, key, kind, extra)
+                else:
+                    self._make_field(cell, 1, 0, key, kind, extra)
                 slot += 1
                 if slot == columns:
                     row += 1
@@ -483,12 +742,18 @@ class ProfilesPage(Page):
             if switches:
                 switch_grid = tk.Frame(grid, bg=c["surface"])
                 switch_grid.grid(row=row, column=0, columnspan=columns,
-                                 sticky="w", pady=(2, 0))
-                switch_grid.columnconfigure(0, minsize=150)
-                for switch_row, (key, label, kind, extra) in enumerate(switches):
-                    self._label(switch_grid, switch_row, 0, t(label))
-                    self._make_field(switch_grid, switch_row, 1, key, kind,
-                                     extra)
+                                 sticky="ew", pady=(5, 0))
+                for col in range(columns):
+                    switch_grid.columnconfigure(col, weight=1,
+                                                uniform="switch-cell")
+                for index, (key, label, kind, extra) in enumerate(switches):
+                    switch_row, switch_col = divmod(index, columns)
+                    cell = tk.Frame(switch_grid, bg=c["surface"])
+                    cell.grid(row=switch_row, column=switch_col, sticky="ew",
+                              padx=(0, 8), pady=2)
+                    cell.columnconfigure(0, weight=1)
+                    self._label(cell, 0, 0, t(label))
+                    self._make_field(cell, 0, 1, key, kind, extra)
 
         row2 = tk.Frame(body, bg=c["surface"])
         row2.pack(fill="x", pady=(10, 4))
@@ -497,23 +762,73 @@ class ProfilesPage(Page):
         tk.Label(row2, text=t("same flags as llama-server"),
                  bg=c["surface"], fg=c["faint"], font=theme.ui(8)).pack(side="right")
         self._extra = self._text(body, 6)
+        self._advanced_fields = dict(self._fields)
+        self._default_fields = {**self._advanced_fields, **default_fields}
+        self._advanced_sliders = dict(self._sliders)
+        self._default_sliders = default_sliders
+        self._fields = self._default_fields
+        self._sliders = self._default_sliders
         self._wire_autosave()
 
         self._editor_hint = tk.Label(self._editor, text="", bg=c["surface"],
                                      fg=c["muted"], font=theme.ui(10))
 
+    def _reset_params(self, keys: set[str] | None = None) -> None:
+        params = self._collect_params()
+        if keys is None:
+            params.clear()
+        else:
+            for key in keys:
+                params.pop(key, None)
+        self._loading_profile = True
+        try:
+            self._fill_params(params)
+        finally:
+            self._loading_profile = False
+        self._schedule_save(0)
+
+    def _reset_profile(self) -> None:
+        if not self._current or not messagebox.askyesno(
+                t("Reset profile"),
+                t("Clear all custom parameters for this profile?"),
+                parent=self):
+            return
+        self._reset_params()
+
     def _toggle_params(self) -> None:
-        if self._params_sc.winfo_ismapped():
-            self._params_sc.pack_forget()
+        params = self._collect_params()
+        self._advanced_visible = not self._advanced_visible
+        if not self._advanced_visible:
+            for group in self._advanced_groups.values():
+                group.pack_forget()
+            for panel in self._quick_panels:
+                panel.pack(fill="x")
+            self._fields = self._default_fields
+            self._sliders = self._default_sliders
             self._params_toggle.configure(
                 text="▾  " + t("Advanced parameters"))
         else:
-            self._params_sc.pack(fill="both", expand=True, pady=(4, 0))
+            for panel in self._quick_panels:
+                panel.pack_forget()
+            for group in self._advanced_groups.values():
+                group.pack(fill="x")
+            self._fields = self._advanced_fields
+            self._sliders = self._advanced_sliders
             self._params_toggle.configure(
                 text="▴  " + t("Advanced parameters"))
 
+        self._loading_profile = True
+        try:
+            profile = self._profiles.get(self._current) if self._current else None
+            model = self._models.get(profile.model_id) if profile else None
+            if model:
+                self._update_model_context(model)
+            self._fill_params(params)
+        finally:
+            self._loading_profile = False
+
     def _label(self, parent, row, col, text) -> None:
-        tk.Label(parent, text=text, bg=self.c["surface"], fg=self.c["muted"],
+        tk.Label(parent, text=text, bg=parent.cget("bg"), fg=self.c["muted"],
                  font=theme.ui(9)).grid(row=row, column=col, sticky="w",
                                         pady=4, padx=(0, 10))
 
@@ -522,10 +837,10 @@ class ProfilesPage(Page):
         c = self.c
         if kind == "bool":
             var = tk.BooleanVar()
-            ttk.Checkbutton(grid, variable=var, takefocus=False
-                            ).grid(row=row, column=col, sticky="w",
-                                   pady=4, padx=(0, 12),
-                                   columnspan=columnspan)
+            check = ttk.Checkbutton(grid, variable=var, takefocus=False)
+            check.grid(row=row, column=col, sticky="w", pady=4,
+                       padx=(0, 12), columnspan=columnspan)
+            self._add_param_tooltip(check, key)
             self._fields[key] = (kind, var, extra)
         elif kind in ("choice", "combo"):
             values, _omit = extra
@@ -539,6 +854,7 @@ class ProfilesPage(Page):
             cb.bind("<MouseWheel>", self._scroll_editor_from_choice)
             cb.bind("<Button-4>", lambda _e: self._scroll_editor_from_choice(-1))
             cb.bind("<Button-5>", lambda _e: self._scroll_editor_from_choice(1))
+            self._add_param_tooltip(cb, key)
             self._fields[key] = (kind, cb, extra)
         elif kind == "file":
             cell = tk.Frame(grid, bg=c["surface"])
@@ -546,6 +862,7 @@ class ProfilesPage(Page):
                       columnspan=columnspan)
             en = ttk.Entry(cell, font=theme.mono(9))
             en.pack(side="left", fill="x", expand=True)
+            self._add_param_tooltip(en, key)
             PillButton(cell, c, "…", size=9, padx=8, height=24,
                        command=lambda e=en: self._browse(e)
                        ).pack(side="left", padx=(4, 0))
@@ -557,9 +874,80 @@ class ProfilesPage(Page):
         else:  # int / float / str
             en = ttk.Entry(grid, width=8 if kind in ("int", "float") else 11,
                            font=theme.mono(9))
-            en.grid(row=row, column=col, sticky="w", pady=4, padx=(0, 12),
+            en.grid(row=row, column=col,
+                    sticky="w" if kind in ("int", "float") else "ew",
+                    pady=4, padx=(0, 12),
                     columnspan=columnspan)
+            self._add_param_tooltip(en, key)
             self._fields[key] = (kind, en, extra)
+
+    def _add_param_tooltip(self, widget: tk.Widget, key: str) -> None:
+        help_text = _PARAM_HELP.get(key)
+        if help_text:
+            Tooltip(widget, self.c, t(help_text))
+
+    def _make_slider_field(self, parent, key, kind, extra) -> None:
+        """Entry + scale for quick mouse and precise keyboard tuning."""
+        low, high, step, _ = _SLIDER_FIELDS[key]
+        bg = parent.cget("bg")
+        row = tk.Frame(parent, bg=bg)
+        row.grid(row=1, column=0, sticky="ew", padx=(0, 8))
+        row.columnconfigure(0, weight=1)
+        value = tk.StringVar()
+        scale = ttk.Scale(row, from_=low, to=high, orient="horizontal")
+        scale.grid(row=0, column=0, sticky="ew")
+        entry = ttk.Entry(row, width=7, textvariable=value,
+                          font=theme.mono(9), justify="right")
+        entry.grid(row=0, column=1, padx=(8, 0))
+        limit = tk.Label(row, text="", bg=bg,
+                         fg=self.c["faint"], font=theme.mono(7))
+        limit.grid(row=1, column=0, sticky="w")
+        syncing = False
+
+        def moved(raw) -> None:
+            if syncing:
+                return
+            snapped = round(float(raw) / step) * step
+            text = str(int(snapped)) if kind == "int" else f"{snapped:g}"
+            if value.get() != text:
+                value.set(text)
+                self._schedule_save()
+
+        def sync_scale(_event=None) -> None:
+            nonlocal syncing
+            try:
+                syncing = True
+                scale.set(float(value.get()))
+            except ValueError:
+                pass
+            finally:
+                syncing = False
+
+        scale.configure(command=moved)
+        entry.bind("<KeyRelease>", sync_scale, add="+")
+        self._add_param_tooltip(scale, key)
+        self._add_param_tooltip(entry, key)
+        self._fields[key] = (kind, entry, extra)
+        self._sliders[key] = (scale, limit, sync_scale)
+
+    def _update_model_context(self, model) -> None:
+        meta = model.meta or {}
+        trained_ctx = int(meta.get("ctx", 0) or 0)
+        ctx_max = _context_limit(meta)
+        ctx_scale, ctx_limit, _sync = self._sliders["ctx-size"]
+        ctx_scale.configure(from_=512, to=ctx_max)
+        ctx_limit.configure(text=t("trained max: {value}",
+                                   value=f"{ctx_max:,}"))
+        for key in ("temp", "top-p"):
+            low, high, _step, _kind = _SLIDER_FIELDS[key]
+            self._sliders[key][1].configure(text=f"{low:g} — {high:g}")
+
+        facts = [meta.get("arch"), meta.get("params"), meta.get("quant"),
+                 fmt_bytes(model.size),
+                 (f"CTX {trained_ctx:,}" if trained_ctx else None)]
+        self._model_name.configure(text=model.name)
+        self._model_meta.configure(
+            text="  ·  ".join(str(value) for value in facts if value))
 
     def _scroll_editor_from_choice(self, event_or_steps) -> str:
         """Scroll the editor instead of cycling a combobox with the wheel."""
@@ -636,11 +1024,12 @@ class ProfilesPage(Page):
             # its profiles) dimmed so the Models toggle is visible here too.
             self._tree.insert("", "end", iid=mid, text=m.name, open=True,
                               values=(f"{n_active}/{len(plist)}",),
-                              tags=("model",))
+                              tags=(("model-active",) if n_active
+                                    else ("model",)))
             for p in plist:
                 self._tree.insert(mid, "end", iid=f"p:{p.id}", text=p.name,
                                   values=("☑" if p.active else "☐",),
-                                  tags=())
+                                  tags=(("active",) if p.active else ()))
         target = keep if keep and self._tree.exists(keep) else None
         if target is None:
             first = self._tree.get_children()
@@ -716,12 +1105,16 @@ class ProfilesPage(Page):
             self._set(self._name, p.name)
             self._set(self._alias, p.route_alias)
             self._active.set(p.active)
+            model = self._models.get(p.model_id)
+            if model:
+                self._update_model_context(model)
             self._fill_params(p.params)
             self._refresh_pickers(p)
         finally:
             self._loading_profile = False
 
     def _fill_params(self, params: dict) -> None:
+        params = _migrate_load_mode(params)
         for key, (kind, w, extra) in self._fields.items():
             raw = params.get(key)
             if kind == "bool":
@@ -736,6 +1129,9 @@ class ProfilesPage(Page):
                 if raw is None:
                     raw = _LLAMA_DEFAULTS.get(key)
                 self._set(w, "" if raw is None else str(raw))
+                slider = self._sliders.get(key)
+                if slider:
+                    slider[2]()
         self._extra.delete("1.0", "end")
         self._extra.insert("1.0", _format_extra(params))
 
@@ -823,7 +1219,13 @@ class ProfilesPage(Page):
 
     def _wire_autosave(self) -> None:
         entries = [self._name, self._alias]
-        for kind, widget, _extra in self._fields.values():
+        field_values = [*self._default_fields.values(),
+                        *self._advanced_fields.values()]
+        seen: set[int] = set()
+        for kind, widget, _extra in field_values:
+            if id(widget) in seen:
+                continue
+            seen.add(id(widget))
             if kind == "bool":
                 widget.trace_add("write", lambda *_: self._schedule_save())
             else:
@@ -876,10 +1278,17 @@ class ProfilesPage(Page):
                 p = self._profiles.get(self._current)
                 self._tree.item(iid, text=p.name,
                                 values=("☑" if p.active else "☐",))
+                self._tree.item(iid,
+                                tags=(("active",) if p.active else ()))
                 parent = self._tree.parent(iid)
                 plist = self._profiles.list(p.model_id)
                 self._tree.item(parent, values=(
                     f"{sum(1 for item in plist if item.active)}/{len(plist)}",))
+                self._tree.item(
+                    parent,
+                    tags=(("model-active",)
+                          if any(item.active for item in plist)
+                          else ("model",)))
         else:
             self._refresh_tree(keep=f"p:{self._current}")
 

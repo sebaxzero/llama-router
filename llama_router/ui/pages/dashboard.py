@@ -78,7 +78,7 @@ class DashboardPage(Page):
         body = self._scroll.body
 
         # ── Hero: server state ───────────────────────────────────────────────
-        hero = Card(body, c, pad=22)
+        hero = Card(body, c, pad=22, border=c["panel_accent"])
         hero.pack(fill="x", padx=PAGE_PAD)
         top = tk.Frame(hero.body, bg=c["surface"])
         top.pack(fill="x")
@@ -114,7 +114,7 @@ class DashboardPage(Page):
         cmd_head = tk.Frame(hero.body, bg=c["surface"])
         cmd_head.pack(fill="x", pady=(12, 4))
         tk.Label(cmd_head, text=t("Launch command").upper(), bg=c["surface"],
-                 fg=c["faint"], font=theme.mono(8, "bold")).pack(side="left")
+                 fg=c["panel_accent"], font=theme.mono(8, "bold")).pack(side="left")
         self._launch_cmd: list[str] = []
         cmd_box = tk.Frame(hero.body, bg=c["inset"])
         cmd_box.pack(fill="x")
@@ -150,7 +150,8 @@ class DashboardPage(Page):
         # This card stays full-width.  Examples can be long, so sharing its
         # row with the optional inventory would make both cards cramped.
         ep = CollapsibleCard(body, c, t("Connect your client"),
-                             state_key="dashboard.client")
+                             state_key="dashboard.client",
+                             accent=c["panel_request"])
         ep.pack(fill="x", padx=PAGE_PAD, pady=(14, 0))
         self._examples_btn = PillButton(ep.header, c, t("Examples"),
                                         command=self._toggle_client_examples,
@@ -165,7 +166,7 @@ class DashboardPage(Page):
         self._ep = ep
 
         # ── Live resource strip ──────────────────────────────────────────────
-        usage = Card(fixed_usage, c)
+        usage = Card(fixed_usage, c, border=c["panel_ok"])
         usage.pack(fill="x")
         self._usage_row = tk.Frame(usage.body, bg=c["surface"])
         self._usage_row.pack(fill="x")
@@ -174,13 +175,15 @@ class DashboardPage(Page):
 
         self._sys_card = tk.Frame(self._usage_row, bg=c["surface"])
         self._sys_card.grid(row=0, column=0, sticky="ew", padx=(0, 16))
-        section_label(self._sys_card, c, t("System")).pack(anchor="w")
+        section_label(self._sys_card, c, t("System"), c["panel_ok"]).pack(
+            anchor="w")
         self._cpu_bar, self._cpu_val = self._meter_row(self._sys_card, "CPU")
         self._ram_bar, self._ram_val = self._meter_row(self._sys_card, "RAM")
 
         self._gpu_card = tk.Frame(self._usage_row, bg=c["surface"])
         self._gpu_card.grid(row=0, column=1, sticky="nsew")
-        section_label(self._gpu_card, c, "GPU").pack(anchor="w")
+        section_label(self._gpu_card, c, "GPU", c["panel_request"]).pack(
+            anchor="w")
         self._gpu_box = tk.Frame(self._gpu_card, bg=c["surface"])
         self._gpu_box.pack(fill="x")
         self._gpu_rows: list[tuple] = []
@@ -194,11 +197,12 @@ class DashboardPage(Page):
 
         self._steps_card_open = bool(
             ctx.collapsible_states.get("dashboard.first_steps", True))
-        steps = Card(self._guidance_row, c)
+        steps = Card(self._guidance_row, c, border=c["panel_warn"])
         self._steps_card_w = steps
         steps_head = tk.Frame(steps.body, bg=c["surface"])
         steps_head.pack(fill="x")
-        section_label(steps_head, c, t("First steps")).pack(side="left")
+        section_label(steps_head, c, t("First steps"), c["panel_warn"]).pack(
+            side="left")
         self._steps_toggle = PillButton(
             steps_head, c, "▾" if self._steps_card_open else "▸", size=9, padx=7,
                                         height=26, command=self._toggle_steps_card)
@@ -208,19 +212,20 @@ class DashboardPage(Page):
             self._steps_box.pack(fill="x", pady=(10, 0))
         self._render_steps()
 
-        summary = Card(self._guidance_row, c)
+        summary = Card(self._guidance_row, c, border=c["panel_num"])
         tk.Label(summary.body, text=t("Inventory").upper(), bg=c["surface"],
-                 fg=c["faint"], font=theme.mono(8, "bold")).pack(anchor="w")
+                 fg=c["panel_num"], font=theme.mono(8, "bold")).pack(anchor="w")
         self._kv_rows = tk.Frame(summary.body, bg=c["surface"])
         self._kv_rows.pack(fill="x", pady=(8, 0))
         self._summary = summary
         self._refresh_summary()
 
-        self._logpanel = Card(body, c)
+        self._logpanel = Card(body, c, border=c["panel_request"])
         logbar = tk.Frame(self._logpanel.body, bg=c["surface"])
         self._logbar = logbar
         logbar.pack(fill="x")
-        self._logs_title = section_label(logbar, c, t("Logs"))
+        self._logs_title = section_label(
+            logbar, c, t("Logs"), c["panel_request"])
         self._logs_title.pack(side="left")
         self._logs_toggle = PillButton(logbar, c, "▸", size=9, padx=7,
                                        height=26, command=self._toggle_logs)
@@ -312,7 +317,8 @@ class DashboardPage(Page):
 
         ep.pack(fill="x", padx=PAGE_PAD, pady=(14, 0))
         launch = CollapsibleCard(body, c, t("Launch command"),
-                                 state_key="dashboard.launch")
+                                 state_key="dashboard.launch",
+                                 accent=c["panel_accent"])
         launch.pack(fill="x", padx=PAGE_PAD, pady=(14, 0))
         self._launch_card = launch
         self._launch_cmd = []

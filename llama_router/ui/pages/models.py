@@ -59,7 +59,9 @@ class ModelsPage(Page):
         self._chips.pack(fill="x", padx=PAGE_PAD, pady=(0, 10))
 
         # ── Table panel ──────────────────────────────────────────────────────
-        panel = tk.Frame(self, bg=c["surface"])
+        panel = tk.Frame(self, bg=c["surface"],
+                         highlightbackground=c["panel_accent"],
+                         highlightthickness=1)
         panel.pack(fill="x", padx=PAGE_PAD, pady=(0, 10))
 
         cols = ("on", "name", "quant", "params", "ctx", "size", "fit", "state")
@@ -102,7 +104,8 @@ class ModelsPage(Page):
         # ── Footer actions ───────────────────────────────────────────────────
         foot = tk.Frame(self, bg=c["bg"])
         foot.pack(fill="x", padx=PAGE_PAD, pady=(0, PAGE_PAD))
-        PillButton(foot, c, t("Enable all"), size=9, padx=12, height=28,
+        PillButton(foot, c, t("Enable all"), kind="accent",
+                   size=9, padx=12, height=28,
                    command=lambda: self._set_all(True)).pack(side="left")
         PillButton(foot, c, t("Disable all"), size=9, padx=12, height=28,
                    command=lambda: self._set_all(False)

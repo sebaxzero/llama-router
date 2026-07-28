@@ -167,8 +167,10 @@ class ServerSettings(_Base):
     max_models: int = 1
     parallel_slots: int = 1
     cpu_threads: int = 8
+    batch_threads: int = 8
     api_key: str = ""
     cont_batching: bool = True
+    models_autoload: bool = True
     metrics: bool = False
     restart_on_crash: bool = False
     stop_timeout: int = 10

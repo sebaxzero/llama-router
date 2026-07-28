@@ -24,6 +24,7 @@ from tkinter import ttk
 #   bg surface surface_hi inset border text muted faint
 #   accent accent_hi accent_dn on_accent title
 #   ok ok_dim warn warn_dim error error_dim request num
+# `apply()` derives quieter panel_* variants for large borders and headings.
 # Plus two non-colour keys: _label (selector caption), _dark (titlebar mode).
 
 THEMES: dict[str, dict] = {
@@ -243,6 +244,14 @@ def is_dark(name: str) -> bool:
     return bool(THEMES.get(name, THEMES["midnight"])["_dark"])
 
 
+def _mix(a: str, b: str, weight: float = 0.55) -> str:
+    """Blend two #rrggbb colours; used for quieter panel accents."""
+    av = tuple(int(a[i:i + 2], 16) for i in (1, 3, 5))
+    bv = tuple(int(b[i:i + 2], 16) for i in (1, 3, 5))
+    return "#" + "".join(f"{round(x * weight + y * (1 - weight)):02x}"
+                          for x, y in zip(av, bv))
+
+
 _MONO_FAMILY: str | None = None
 _UI_FAMILY: str | None = None
 
@@ -311,7 +320,9 @@ def set_dpi_aware() -> None:
 
 def apply(root: tk.Tk, name: str = "midnight") -> dict:
     """Configure ttk styles on *root* and return the token palette."""
-    c = THEMES.get(name, THEMES["midnight"])
+    c = dict(THEMES.get(name, THEMES["midnight"]))
+    for token in ("accent", "ok", "warn", "error", "request", "num"):
+        c[f"panel_{token}"] = _mix(c[token], c["muted"])
     init_fonts(root)
     root.configure(bg=c["bg"])
 
@@ -365,5 +376,9 @@ def apply(root: tk.Tk, name: str = "midnight") -> dict:
 
     style.configure("Horizontal.TProgressbar", background=c["accent"],
                     troughcolor=c["inset"], borderwidth=0, thickness=3)
+    style.configure("Horizontal.TScale", background=c["surface"],
+                    troughcolor=c["inset"], borderwidth=0)
+    style.map("Horizontal.TScale",
+              background=[("active", c["accent_hi"])])
 
     return c

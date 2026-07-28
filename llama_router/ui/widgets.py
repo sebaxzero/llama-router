@@ -150,12 +150,14 @@ class Card(tk.Frame):
     """
 
     def __init__(self, parent: tk.Widget, c: dict, pad: int = 16,
-                 radius: int = 6, fill: str | None = None) -> None:
+                 radius: int = 6, fill: str | None = None,
+                 border: str | None = None) -> None:
         super().__init__(parent, bg=parent.cget("bg"))
         self._c = c
         self._pad = pad
         self._radius = radius
         self._fill = fill or c["surface"]
+        self._border = border or c["border"]
 
         self._canvas = tk.Canvas(self, bg=parent.cget("bg"),
                                  highlightthickness=0, bd=0)
@@ -180,7 +182,7 @@ class Card(tk.Frame):
         self._rect = rounded_rect(self._canvas, 1, 1,
                                   e.width - 2, e.height - 2, r,
                                   fill=self._fill,
-                                  outline=self._c["border"])
+                                  outline=self._border)
         self._canvas.tag_lower(self._rect)
 
 
@@ -280,6 +282,55 @@ class PillButton(tk.Canvas):
         """Swap the button style in place (used by toggles/segmented controls)."""
         self._kind = kind
         self._draw("focus" if self._focused else "normal")
+
+
+class Tooltip:
+    """Small delayed, theme-aware hint attached to any widget."""
+
+    def __init__(self, widget: tk.Widget, c: dict, text: str,
+                 delay: int = 450) -> None:
+        self.widget = widget
+        self.c = c
+        self.text = text
+        self.delay = delay
+        self._after_id: str | None = None
+        self._tip: tk.Toplevel | None = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self.hide, add="+")
+        widget.bind("<ButtonPress>", self.hide, add="+")
+        widget.bind("<Destroy>", self.hide, add="+")
+
+    def _schedule(self, _event=None) -> None:
+        self.hide()
+        self._after_id = self.widget.after(self.delay, self.show)
+
+    def show(self) -> None:
+        self._after_id = None
+        if self._tip is not None or not self.widget.winfo_exists():
+            return
+        x, y = self.widget.winfo_pointerxy()
+        tip = self._tip = tk.Toplevel(self.widget)
+        tip.wm_overrideredirect(True)
+        tip.wm_geometry(f"+{x + 12}+{y + 18}")
+        tk.Label(tip, text=self.text, bg=self.c["surface_hi"],
+                 fg=self.c["text"], font=theme.ui(9), justify="left",
+                 wraplength=320, padx=9, pady=6,
+                 highlightbackground=self.c["panel_accent"],
+                 highlightthickness=1).pack()
+
+    def hide(self, _event=None) -> None:
+        if self._after_id is not None:
+            try:
+                self.widget.after_cancel(self._after_id)
+            except tk.TclError:
+                pass
+            self._after_id = None
+        if self._tip is not None:
+            try:
+                self._tip.destroy()
+            except tk.TclError:
+                pass
+            self._tip = None
 
 
 class StatusDot(tk.Canvas):
@@ -427,7 +478,10 @@ class ScrollFrame(tk.Frame):
 
     def _on_body(self, _e) -> None:
         self._fit_height()
-        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+        region = self._canvas.bbox("all")
+        self._canvas.configure(scrollregion=region)
+        if region and region[3] - region[1] <= self._canvas.winfo_height():
+            self._canvas.yview_moveto(0)
 
     def _on_canvas(self, e) -> None:
         self._canvas.itemconfigure(self._win, width=e.width)
@@ -570,10 +624,11 @@ def enable_row_hover(tree: ttk.Treeview, c: dict) -> None:
     tree.bind("<Leave>", _on_leave)
 
 
-def section_label(parent: tk.Widget, c: dict, text: str) -> tk.Label:
+def section_label(parent: tk.Widget, c: dict, text: str,
+                  accent: str | None = None) -> tk.Label:
     """Uppercase mono card heading."""
     return tk.Label(parent, text=theme.track(text), bg=parent.cget("bg"),
-                    fg=c["faint"], font=theme.mono(8, "bold"))
+                    fg=accent or c["faint"], font=theme.mono(8, "bold"))
 
 
 class CollapsibleCard(Card):
@@ -582,8 +637,9 @@ class CollapsibleCard(Card):
     def __init__(self, parent: tk.Widget, c: dict, title: str,
                  expanded: bool = True, pad: int = 16,
                  on_toggle: Callable[[bool], None] | None = None,
-                 state_key: str | None = None) -> None:
-        super().__init__(parent, c, pad=pad)
+                 state_key: str | None = None,
+                 accent: str | None = None) -> None:
+        super().__init__(parent, c, pad=pad, border=accent)
         self._state_key = state_key
         self._state_store: dict[str, bool] | None = None
         owner = parent
@@ -599,7 +655,14 @@ class CollapsibleCard(Card):
         self._on_toggle = on_toggle
         self.header = tk.Frame(self.body, bg=c["surface"])
         self.header.pack(fill="x")
-        section_label(self.header, c, title).pack(side="left")
+        if accent:
+            marker = tk.Frame(self.header, bg=accent, width=4, height=16)
+            marker.pack(side="left", padx=(0, 8))
+            marker.pack_propagate(False)
+        heading = section_label(self.header, c, title)
+        if accent:
+            heading.configure(fg=accent)
+        heading.pack(side="left")
         self._toggle = PillButton(self.header, c, "▾" if expanded else "▸", size=9,
                                   padx=7, height=26, command=self.toggle)
         self._toggle.pack(side="right")
@@ -621,10 +684,20 @@ class CollapsibleCard(Card):
             self.content.pack(fill="both", expand=True, pady=(10, 0))
         else:
             self.content.pack_forget()
+        self.after_idle(self._refresh_scroll_layout)
         if self._state_key and self._state_store is not None:
             self._state_store[self._state_key] = open_
         if self._on_toggle is not None:
             self._on_toggle(open_)
+
+    def _refresh_scroll_layout(self) -> None:
+        """Propagate the card's new requested height to nested scrollers."""
+        self._on_body()
+        owner = self.master
+        while owner is not None:
+            if isinstance(owner, ScrollFrame):
+                owner._on_body(None)
+            owner = getattr(owner, "master", None)
 
 
 def key_value(parent: tk.Widget, c: dict, key: str, value: str,

@@ -27,12 +27,18 @@ from llama_router.ui.pages.profiles import ProfilesPage
 from llama_router.ui.pages.runtime import RuntimePage
 from llama_router.ui.pages.settings import SettingsPage
 from llama_router.ui.widgets import (AppMark, NavItem, ScrollFrame, StatusDot,
-                                     status_label)
+                                     Tooltip, status_label)
 
 _DRAIN_MS = 100          # EventBus drain cadence
 _STATE_KEY = "ui_state"  # KV key for the persisted active page
 _DEFAULT_GEOMETRY = "960x640"  # fixed startup size (matches tools/screenshots.py)
 _PREWARM_START_MS = 400  # first page is already painted before hidden work
+_STATUS_CONTEXT_EVENTS = (
+    "runtime_activated", "runtime_added", "runtime_deleted",
+    "model_updated", "model_removed", "models_scanned",
+    "profile_created", "profile_updated", "profile_deleted",
+    "profiles_reset", "preset_imported",
+)
 
 log = logging.getLogger(__name__)
 
@@ -186,6 +192,8 @@ class App:
 
         # Tear down: drop chrome subscriptions + the per-second clock timer.
         self.ctx.events.unsubscribe("server_status", self._on_server_status)
+        for event in _STATUS_CONTEXT_EVENTS:
+            self.ctx.events.unsubscribe(event, self._update_status_context)
         if self._clock_id is not None:
             self.root.after_cancel(self._clock_id)
             self._clock_id = None
@@ -753,8 +761,14 @@ class App:
         self._sb_right = tk.Label(bar, text="", bg=c["bg"], fg=c["faint"],
                                   font=theme.mono(8))
         self._sb_right.pack(side="right", padx=14)
+        Tooltip(self._sb_right, c,
+                t("Active runtime and routes available to llama-server."))
 
         self.ctx.events.subscribe("server_status", self._on_server_status)
+        for event in _STATUS_CONTEXT_EVENTS:
+            self.ctx.events.subscribe(event, self._update_status_context)
+        self._last_server_status = self._server_status()
+        self._update_status_context()
 
     def _on_server_status(self, data: dict) -> None:
         c = self.ctx.colors
@@ -764,15 +778,44 @@ class App:
         # f-string on a str-mixin enum renders "ServerStatus.STOPPED" instead
         # of "stopped", so normalise here — the one place every path converges.
         status = getattr(status, "value", status)
+        self._last_server_status = status
         self._sb_dot.set(status)
         self._sb_text.configure(text=f"server · {status_label(status).lower()}")
         self._head_dot.configure(fg={
             "running": c["ok"], "starting": c["warn"], "stopping": c["warn"],
             "error": c["error"]}.get(status, c["faint"]))
         self._head_mark.set_running(status == "running")
+        self._update_status_context()
         if self._tray is not None:
             self._tray.set_colors(self.ctx.colors)
             self._tray.set_server_status(status)
+
+    def _update_status_context(self, _data=None) -> None:
+        parts: list[str] = []
+        runtime = self.ctx.services["runtimes"].get_active()
+        if runtime:
+            parts.append(f"runtime · {runtime.backend.upper()}")
+
+        models = self.ctx.services["models"]
+        profiles = self.ctx.services["profiles"]
+        available = []
+        for model in models.list():
+            active = [p for p in profiles.list(model.id) if p.active]
+            if model.enabled and model.state != "missing" and active:
+                available.append((model, active))
+        if len(available) == 1:
+            model, active = available[0]
+            parts.append(f"model · {model.name}")
+            if len(active) == 1:
+                parts.append(f"profile · {active[0].name}")
+            elif len(active) > 1:
+                parts.append(t("{count} active profiles", count=len(active)))
+        elif len(available) > 1:
+            label = ("{count} models loaded"
+                     if getattr(self, "_last_server_status", "stopped") == "running"
+                     else "{count} models available")
+            parts.append(t(label, count=len(available)))
+        self._sb_right.configure(text="   ".join(parts))
 
     # ── Navigation ───────────────────────────────────────────────────────────
 
