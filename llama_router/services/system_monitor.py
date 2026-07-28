@@ -110,7 +110,6 @@ def _darwin_cpu_percent() -> float:
 class SystemMonitor:
     def __init__(self, events: EventBus) -> None:
         self._events = events
-        self._stop = threading.Event()
         self._cpu_percent = None    # direct % source (macOS has no tick API)
         if sys.platform == "win32":
             self._mem, self._cpu_times = _win_mem, _win_cpu_times
@@ -122,24 +121,17 @@ class SystemMonitor:
         else:
             self._mem = self._cpu_times = None
 
-    @property
-    def available(self) -> bool:
-        return self._mem is not None
-
     def start(self) -> None:
-        if not self.available:
+        if self._mem is None:
             log.info("no stdlib CPU/RAM source on %s — system stats disabled",
                      sys.platform)
             return
         threading.Thread(target=self._loop, daemon=True,
                          name="system-monitor").start()
 
-    def stop(self) -> None:
-        self._stop.set()
-
     def _loop(self) -> None:
         prev = self._cpu_times() if self._cpu_times else None
-        while not self._stop.is_set():
+        while True:
             time.sleep(_INTERVAL)
             try:
                 if self._cpu_times:

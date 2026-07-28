@@ -28,27 +28,19 @@ class GpuMonitor:
     def __init__(self, events: EventBus) -> None:
         self._events = events
         self._smi = shutil.which("nvidia-smi")
-        self._stop = threading.Event()
-
-    @property
-    def available(self) -> bool:
-        return self._smi is not None
 
     def start(self) -> None:
-        if not self.available:
+        if self._smi is None:
             log.info("nvidia-smi not found — GPU stats disabled")
             return
         threading.Thread(target=self._loop, daemon=True,
                          name="gpu-monitor").start()
 
-    def stop(self) -> None:
-        self._stop.set()
-
     def _loop(self) -> None:
         extra = ({"creationflags": subprocess.CREATE_NO_WINDOW}
                  if sys.platform == "win32" else {})
         failures = 0
-        while not self._stop.is_set():
+        while True:
             try:
                 out = subprocess.run(
                     [self._smi, *_QUERY], capture_output=True, text=True,

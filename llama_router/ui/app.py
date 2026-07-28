@@ -32,6 +32,7 @@ _DRAIN_MS = 100          # EventBus drain cadence
 _STATE_KEY = "ui_state"  # KV key for the persisted active page
 _DEFAULT_GEOMETRY = "960x640"  # fixed startup size (matches tools/screenshots.py)
 _PREWARM_DELAY_MS = 150  # let the initial page paint before hidden pages build
+_PREWARM_STEP_MS = 50    # yield to input and redraws between page builds
 
 log = logging.getLogger(__name__)
 
@@ -385,7 +386,11 @@ class App:
         work.
         """
         self._cancel_prewarm()
-        self._prewarm_queue = [key for key in PAGES if key not in self._pages]
+        keys = list(PAGES)
+        active = keys.index(self._active) if self._active in PAGES else 0
+        ordered = keys[active + 1:] + keys[:active]
+        self._prewarm_queue = [key for key in ordered
+                               if key not in self._pages]
         if not self._prewarm_queue:
             return
         self._set_prewarm_status(0, len(self._prewarm_queue))
@@ -405,7 +410,8 @@ class App:
         done = total - remaining
         if self._prewarm_queue:
             self._set_prewarm_status(done, total)
-            self._prewarm_id = self.root.after_idle(self._prewarm_next)
+            self._prewarm_id = self.root.after(
+                _PREWARM_STEP_MS, self._prewarm_next)
         else:
             self._sb_right.configure(text=t("Interface ready"))
             self._prewarm_id = self.root.after(
