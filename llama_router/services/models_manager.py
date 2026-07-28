@@ -109,17 +109,28 @@ class ModelsManager:
                         *[Path(f) for f in cfg.model_folders]})
 
         found_paths: dict[str, tuple[int, dict]] = {}  # path → (size, meta)
+        existing_by_path = {m.path: m for m in self._models.values()}
         for folder in folders:
             if not folder.is_dir():
                 continue
             for p in folder.rglob("*.gguf"):
+                resolved = str(p.resolve())
+                if resolved in found_paths:
+                    continue
+                stat = p.stat()
+                existing = existing_by_path.get(resolved)
+                if (existing is not None and existing.size == stat.st_size
+                        and existing.meta.get("_scan_mtime_ns")
+                        == stat.st_mtime_ns):
+                    found_paths[resolved] = (stat.st_size, dict(existing.meta))
+                    continue
                 info = read_gguf_info(p)
                 if _classify(p, info) == "model":
-                    found_paths[str(p.resolve())] = (
-                        p.stat().st_size, _meta_from_info(info, p.stem))
+                    meta = _meta_from_info(info, p.stem)
+                    meta["_scan_mtime_ns"] = stat.st_mtime_ns
+                    found_paths[resolved] = (stat.st_size, meta)
 
         # Merge with existing registry
-        existing_by_path = {m.path: m for m in self._models.values()}
         new_count = 0
 
         for path_str, (size, meta) in found_paths.items():

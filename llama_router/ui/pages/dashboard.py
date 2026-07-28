@@ -143,6 +143,8 @@ class DashboardPage(Page):
                                     command=self._toggle_logs)
         self._logs_btn.pack(side="left", padx=(6, 0))
         self._inventory_open = self._steps_open = self._logs_open = False
+        self._logs_dirty = False
+        self._tick_id = None
 
         # ── Client connection ───────────────────────────────────────────────
         # This card stays full-width.  Examples can be long, so sharing its
@@ -229,15 +231,25 @@ class DashboardPage(Page):
         self._src.current(0)
         self._src.pack(side="left", padx=(12, 0))
         self._src.bind("<<ComboboxSelected>>", lambda _e: self._reload_logs())
-        PillButton(logbar, c, t("Clear"), size=9, padx=12, height=26,
-                   command=self._clear_logs).pack(side="right")
-        PillButton(logbar, c, t("Export…"), size=9, padx=12, height=26,
-                   command=self._export_logs).pack(side="right", padx=(0, 6))
-        PillButton(logbar, c, t("Copy"), size=9, padx=12, height=26,
-                   command=self._copy_logs).pack(side="right", padx=(0, 6))
+        clear_logs = PillButton(logbar, c, t("Clear"), size=9, padx=12,
+                                height=26, command=self._clear_logs)
+        clear_logs.pack(side="right")
+        export_logs = PillButton(logbar, c, t("Export…"), size=9, padx=12,
+                                 height=26, command=self._export_logs)
+        export_logs.pack(side="right", padx=(0, 6))
+        copy_logs = PillButton(logbar, c, t("Copy"), size=9, padx=12,
+                               height=26, command=self._copy_logs)
+        copy_logs.pack(side="right", padx=(0, 6))
         self._follow = tk.BooleanVar(value=True)
-        ttk.Checkbutton(logbar, text=t("Follow"), variable=self._follow,
-                        takefocus=False).pack(side="right", padx=(0, 10))
+        follow_logs = ttk.Checkbutton(logbar, text=t("Follow"),
+                                      variable=self._follow, takefocus=False)
+        follow_logs.pack(side="right", padx=(0, 10))
+        self._log_actions = (
+            (clear_logs, {"side": "right"}),
+            (export_logs, {"side": "right", "padx": (0, 6)}),
+            (copy_logs, {"side": "right", "padx": (0, 6)}),
+            (follow_logs, {"side": "right", "padx": (0, 10)}),
+        )
         self._log_text = tk.Text(
             self._logpanel.body, height=10, bg=c["inset"], fg=c["text"], bd=0,
             padx=10, pady=8, font=theme.mono(8), wrap="none", state="disabled",
@@ -329,20 +341,24 @@ class DashboardPage(Page):
         self._scroll.bind("<Configure>",
                           lambda e: self._relayout_dash(e.width))
 
-        self.subscribe("server_status", self._on_status)
-        self.subscribe("server_health", lambda d: self._tick_uptime())
-        self.subscribe("models_scanned", lambda d: self._refresh_summary())
-        self.subscribe("runtime_added", lambda d: self._refresh_summary())
-        self.subscribe("runtime_deleted", lambda d: self._refresh_summary())
-        self.subscribe("runtime_activated", lambda d: self._refresh_summary())
-        self.subscribe("gpu_stats", self._on_gpu)
-        self.subscribe("system_stats", self._on_system)
+        self.subscribe("server_status", self.when_visible(self._on_status))
+        self.subscribe("server_health",
+                       self.when_visible(lambda d: self._tick_uptime()))
+        self.subscribe("models_scanned",
+                       self.when_visible(lambda d: self._refresh_summary()))
+        self.subscribe("runtime_added",
+                       self.when_visible(lambda d: self._refresh_summary()))
+        self.subscribe("runtime_deleted",
+                       self.when_visible(lambda d: self._refresh_summary()))
+        self.subscribe("runtime_activated",
+                       self.when_visible(lambda d: self._refresh_summary()))
+        self.subscribe("gpu_stats", self.when_visible(self._on_gpu))
+        self.subscribe("system_stats", self.when_visible(self._on_system))
         self.subscribe("log_line", self._on_log)
         self._refresh_cmd()
         server = self.ctx.services.get("server")
         if server is not None:
             self._on_status(server.get_status_dict())
-        self._tick()
 
     # ── Responsive ───────────────────────────────────────────────────────────
 
@@ -410,16 +426,14 @@ class DashboardPage(Page):
         self._logs_toggle.set_text("▾" if open_ else "▸")
         if open_:
             self._reload_logs()
-            for child in self._logbar.pack_slaves():
-                if child not in (self._logs_title, self._logs_toggle, self._src):
-                    child.pack(side="right", padx=(0, 6))
+            for child, options in self._log_actions:
+                child.pack(**options)
             self._src.pack(side="left", padx=(12, 0))
             self._logscroll.pack(side="right", fill="y")
             self._log_text.pack(fill="both", expand=True, padx=1, pady=(0, 1))
         else:
-            for child in self._logbar.pack_slaves():
-                if child not in (self._logs_title, self._logs_toggle):
-                    child.pack_forget()
+            for child, _options in self._log_actions:
+                child.pack_forget()
             self._src.pack_forget()
             self._logscroll.pack_forget()
             self._log_text.pack_forget()
@@ -753,10 +767,11 @@ class DashboardPage(Page):
         self._refresh_cmd()
 
     def _tick(self) -> None:
-        if not self.winfo_exists():
+        self._tick_id = None
+        if not self.winfo_exists() or not self._visible:
             return
         self._tick_uptime()
-        self.after(1000, self._tick)
+        self._tick_id = self.after(1000, self._tick)
 
     def _tick_uptime(self) -> None:
         server = self.ctx.services.get("server")
@@ -930,6 +945,9 @@ class DashboardPage(Page):
         self._log_text.see("end")
 
     def _on_log(self, entry: dict) -> None:
+        if not self._visible:
+            self._logs_dirty = True
+            return
         sources = self._log_sources()
         if sources and entry["source"] not in sources:
             return
@@ -990,6 +1008,19 @@ class DashboardPage(Page):
             self.ctx.logs.log("app", "error", f"Could not export logs: {exc}")
 
     def on_show(self) -> None:
+        server = self.ctx.services.get("server")
+        if server is not None:
+            self._on_status(server.get_status_dict())
         self._refresh_summary()
         self._render_endpoints()
         self._refresh_cmd()
+        if self._logs_dirty and self._logs_open:
+            self._reload_logs()
+        self._logs_dirty = False
+        if self._tick_id is None:
+            self._tick()
+
+    def on_hide(self) -> None:
+        if self._tick_id is not None:
+            self.after_cancel(self._tick_id)
+            self._tick_id = None

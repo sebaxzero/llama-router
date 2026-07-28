@@ -16,7 +16,6 @@ import re
 import subprocess
 import sys
 import threading
-import time
 
 from llama_router.core.events import EventBus
 
@@ -110,6 +109,8 @@ def _darwin_cpu_percent() -> float:
 class SystemMonitor:
     def __init__(self, events: EventBus) -> None:
         self._events = events
+        self._active = False
+        self._cv = threading.Condition()
         self._cpu_percent = None    # direct % source (macOS has no tick API)
         if sys.platform == "win32":
             self._mem, self._cpu_times = _win_mem, _win_cpu_times
@@ -120,6 +121,11 @@ class SystemMonitor:
             self._cpu_percent = _darwin_cpu_percent
         else:
             self._mem = self._cpu_times = None
+
+    def set_active(self, active: bool) -> None:
+        with self._cv:
+            self._active = active
+            self._cv.notify_all()
 
     def start(self) -> None:
         if self._mem is None:
@@ -132,7 +138,12 @@ class SystemMonitor:
     def _loop(self) -> None:
         prev = self._cpu_times() if self._cpu_times else None
         while True:
-            time.sleep(_INTERVAL)
+            with self._cv:
+                self._cv.wait_for(lambda: self._active)
+                paused = self._cv.wait_for(lambda: not self._active,
+                                           timeout=_INTERVAL)
+            if paused:
+                continue
             try:
                 if self._cpu_times:
                     idle, total = self._cpu_times()

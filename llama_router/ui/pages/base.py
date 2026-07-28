@@ -25,6 +25,7 @@ class Page(tk.Frame):
         self.c = ctx.colors
         self._subs: list[tuple[str, Callable[[Any], None]]] = []
         self._after_ids: list[str] = []
+        self._visible = False
 
     def subscribe(self, event: str, handler: Callable[[Any], None]) \
             -> Callable[[Any], None]:
@@ -37,9 +38,30 @@ class Page(tk.Frame):
         """Track scheduled callbacks so teardown() can cancel them."""
         if func is None:
             return super().after(ms)
-        aid = super().after(ms, func, *args)
+        aid = None
+
+        def run():
+            try:
+                return func(*args)
+            finally:
+                if aid in self._after_ids:
+                    self._after_ids.remove(aid)
+
+        aid = super().after(ms, run)
         self._after_ids.append(aid)
         return aid
+
+    def after_cancel(self, aid):  # type: ignore[override]
+        try:
+            super().after_cancel(aid)
+        finally:
+            if aid in self._after_ids:
+                self._after_ids.remove(aid)
+
+    def when_visible(self, handler: Callable[[Any], None]) \
+            -> Callable[[Any], None]:
+        """Skip widget work while this cached page is hidden."""
+        return lambda data: handler(data) if self._visible else None
 
     def teardown(self) -> None:
         """Drop every subscription + pending timer so a destroyed page stops
@@ -47,7 +69,7 @@ class Page(tk.Frame):
         for event, handler in self._subs:
             self.ctx.events.unsubscribe(event, handler)
         self._subs.clear()
-        for aid in self._after_ids:
+        for aid in list(self._after_ids):
             try:
                 self.after_cancel(aid)
             except Exception:
@@ -61,3 +83,6 @@ class Page(tk.Frame):
 
     def on_show(self) -> None:
         """Called every time the page becomes visible."""
+
+    def on_hide(self) -> None:
+        """Called immediately before the page is hidden."""

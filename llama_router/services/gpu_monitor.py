@@ -13,7 +13,6 @@ import shutil
 import subprocess
 import sys
 import threading
-import time
 
 from llama_router.core.events import EventBus
 
@@ -28,6 +27,13 @@ class GpuMonitor:
     def __init__(self, events: EventBus) -> None:
         self._events = events
         self._smi = shutil.which("nvidia-smi")
+        self._active = False
+        self._cv = threading.Condition()
+
+    def set_active(self, active: bool) -> None:
+        with self._cv:
+            self._active = active
+            self._cv.notify_all()
 
     def start(self) -> None:
         if self._smi is None:
@@ -41,6 +47,8 @@ class GpuMonitor:
                  if sys.platform == "win32" else {})
         failures = 0
         while True:
+            with self._cv:
+                self._cv.wait_for(lambda: self._active)
             try:
                 out = subprocess.run(
                     [self._smi, *_QUERY], capture_output=True, text=True,
@@ -64,4 +72,6 @@ class GpuMonitor:
                     log.warning("nvidia-smi failing repeatedly — "
                                 "GPU stats disabled")
                     return
-            time.sleep(_INTERVAL)
+            with self._cv:
+                self._cv.wait_for(lambda: not self._active,
+                                  timeout=_INTERVAL)

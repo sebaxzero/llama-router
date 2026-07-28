@@ -60,7 +60,10 @@ class ConfigManager:
         # server sub-object needs deep merge
         if "server" in patch and isinstance(patch["server"], dict):
             merged["server"] = {**self._cfg.server.to_dict(), **patch["server"]}
-        self._cfg = AppConfig.from_dict(merged)
+        updated = AppConfig.from_dict(merged)
+        if updated == self._cfg:
+            return self._cfg
+        self._cfg = updated
         self.save()
         return self._cfg
 

@@ -17,6 +17,7 @@ class SettingsPage(Page):
     def __init__(self, parent: tk.Widget, ctx) -> None:
         super().__init__(parent, ctx)
         self._autosave_id: str | None = None
+        self._saved_form: dict = {}
         self._build()
 
     def _build(self) -> None:
@@ -118,6 +119,7 @@ class SettingsPage(Page):
         self._show_api_details.trace_add(
             "write", lambda *_: self._apply_api_details_visibility())
         self._sync_host()
+        self._saved_form = self._serialize()
         self._wire_autosave()
 
         tk.Frame(body, bg=c["bg"], height=PAGE_PAD).pack()
@@ -346,6 +348,11 @@ class SettingsPage(Page):
             var.trace_add("write", lambda *_: self._schedule_save(0))
 
     def _schedule_save(self, delay: int = 650) -> None:
+        if self._serialize() == self._saved_form:
+            if self._autosave_id is not None:
+                self.after_cancel(self._autosave_id)
+                self._autosave_id = None
+            return
         if self._autosave_id is not None:
             self.after_cancel(self._autosave_id)
         self._save_state.configure(text=t("Saving…"), fg=self.c["warn"])
@@ -400,6 +407,7 @@ class SettingsPage(Page):
         if self._tray_var is not None:
             patch["minimize_to_tray"] = self._tray_var.get()
         self.ctx.services["config"].update(patch)
+        self._saved_form = self._serialize()
         if lang_code != previous_language:
             self.ctx.apply_language(lang_code)
             return

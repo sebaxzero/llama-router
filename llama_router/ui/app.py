@@ -26,13 +26,13 @@ from llama_router.ui.pages.playground import PlaygroundPage
 from llama_router.ui.pages.profiles import ProfilesPage
 from llama_router.ui.pages.runtime import RuntimePage
 from llama_router.ui.pages.settings import SettingsPage
-from llama_router.ui.widgets import AppMark, NavItem, StatusDot
+from llama_router.ui.widgets import (AppMark, NavItem, ScrollFrame, StatusDot,
+                                     status_label)
 
 _DRAIN_MS = 100          # EventBus drain cadence
 _STATE_KEY = "ui_state"  # KV key for the persisted active page
 _DEFAULT_GEOMETRY = "960x640"  # fixed startup size (matches tools/screenshots.py)
-_PREWARM_DELAY_MS = 150  # let the initial page paint before hidden pages build
-_PREWARM_STEP_MS = 50    # yield to input and redraws between page builds
+_PREWARM_START_MS = 400  # first page is already painted before hidden work
 
 log = logging.getLogger(__name__)
 
@@ -87,11 +87,14 @@ class App:
         ctx.apply_theme = self.apply_theme
         ctx.apply_language = self.apply_language
         self._clock_id: int | None = None
+        self._resize_id: str | None = None
         self._prewarm_id: str | None = None
         self._prewarm_queue: list[str] = []
+        self._page_build_ms: dict[str, float] = {}
         self._nav_hbar_visible = False
         self._rebuilding = False   # guards resize handlers during theme teardown
         self._closing = False
+        self._last_nav_focus: tk.Widget | None = None
 
         from llama_router.core.storage import db_read
         state = db_read(ctx.paths.db_path, _STATE_KEY, default={}) or {}
@@ -113,6 +116,9 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         # Keep chrome fluid as the window is resized (header + tab strip).
         self.root.bind("<Configure>", self._on_resize)
+        self.root.bind("<Unmap>", self._on_unmap)
+        self.root.bind("<Map>", self._on_map)
+        self._bind_shortcuts()
 
         # ── System tray (Windows, opt-in) ────────────────────────────────────
         # The tray lives outside the widget tree, so theme flips never touch
@@ -121,7 +127,6 @@ class App:
         self._tray = None
         from llama_router.services import tray as _tray_mod
         if ctx.enable_tray and _tray_mod.is_supported():
-            self.root.bind("<Unmap>", self._on_unmap)
             ctx.events.subscribe("tray_restore", self._on_tray_restore)
             ctx.events.subscribe("tray_start", self._on_tray_start)
             ctx.events.subscribe("tray_stop", self._on_tray_stop)
@@ -164,6 +169,10 @@ class App:
         """Rebuild chrome and pages after a live appearance change."""
         self._rebuilding = True
         prev = self._active
+        self._cancel_prewarm()
+        if self._resize_id is not None:
+            self.root.after_cancel(self._resize_id)
+            self._resize_id = None
 
         # Snapshot the active page's unsaved input so a theme flip can't wipe
         # it (the picker lives on Settings, which rebuilds on theme change).
@@ -177,7 +186,6 @@ class App:
 
         # Tear down: drop chrome subscriptions + the per-second clock timer.
         self.ctx.events.unsubscribe("server_status", self._on_server_status)
-        self._cancel_prewarm()
         if self._clock_id is not None:
             self.root.after_cancel(self._clock_id)
             self._clock_id = None
@@ -340,15 +348,24 @@ class App:
         """
         if getattr(self, "_rebuilding", False):
             return
+        if self._resize_id is not None:
+            self.root.after_cancel(self._resize_id)
+        self._resize_id = self.root.after(25, self._apply_resize)
+
+    def _apply_resize(self) -> None:
+        self._resize_id = None
+        if self._rebuilding or self._closing:
+            return
         self._relayout_chrome()
         self._on_nav_resize()
 
     def _scroll_to_nav(self, key: str) -> None:
         """Bring the active tab into view when the strip is scrolled."""
+        if self._active != key:
+            return
         item = self._nav.get(key)
         if not item or not getattr(self, "_nav_canvas", None):
             return
-        self._nav_canvas.update_idletasks()
         fw = self._nav_frame.winfo_width()
         if fw <= self._nav_canvas.winfo_width():
             return
@@ -365,7 +382,316 @@ class App:
         self._pages = {}
         self._active = None
         self.show_page(active_key)
-        self._start_prewarm()
+        self._schedule_prewarm(_PREWARM_START_MS)
+
+    def _bind_shortcuts(self) -> None:
+        """Small, discoverable keyboard layer for the desktop shell."""
+        keys = tuple(PAGES)
+        for index, key in enumerate(keys, 1):
+            self.root.bind(f"<Control-Key-{index}>",
+                           lambda _e, k=key: self.show_page(k))
+        self.root.bind("<Control-comma>",
+                       lambda _e: self.show_page("settings"))
+        self.root.bind("<Control-Tab>",
+                       lambda _e: self._cycle_page(1))
+        self.root.bind("<Control-Shift-Tab>",
+                       lambda _e: self._cycle_page(-1))
+        self.root.bind("<Tab>", lambda _e: self._focus_step(1))
+        self.root.bind("<Shift-Tab>", lambda _e: self._focus_step(-1))
+        self.root.bind("<Escape>", self._restore_navigation_focus)
+        self.root.bind_all("<FocusIn>", self._remember_navigation_focus,
+                           add="+")
+        for sequence, direction in (
+            ("<Left>", (-1, 0)), ("<Right>", (1, 0)),
+            ("<Up>", (0, -1)), ("<Down>", (0, 1)),
+        ):
+            self.root.bind(
+                sequence,
+                lambda _e, d=direction: self._start_direction(*d))
+
+        # Text's class binding consumes Tab before the toplevel sees it.
+        # Override only that class so multiline editors join normal app
+        # navigation instead of inserting whitespace.
+        for sequence, action in (
+            ("<Tab>", lambda _e: self._focus_step(1)),
+            ("<Shift-Tab>", lambda _e: self._focus_step(-1)),
+            ("<Control-Tab>", lambda _e: self._cycle_page(1)),
+            ("<Control-Shift-Tab>", lambda _e: self._cycle_page(-1)),
+        ):
+            self.root.bind_class("Text", sequence, action)
+        for widget_class in ("Text", "Entry", "TEntry", "TCombobox"):
+            self.root.bind_class(widget_class, "<Escape>",
+                                 self._restore_navigation_focus)
+
+        # Only our hand-drawn controls are focusable Canvas/Frame widgets.
+        # Inputs and tables keep their native arrow-key behaviour.
+        for widget_class in ("Canvas", "Frame"):
+            for sequence, direction in (
+                ("<Left>", (-1, 0)), ("<Right>", (1, 0)),
+                ("<Up>", (0, -1)), ("<Down>", (0, 1)),
+            ):
+                self.root.bind_class(
+                    widget_class, sequence,
+                    lambda _e, d=direction: self._focus_direction(*d))
+        # Single-line fields behave as cells in the control panel: arrows
+        # leave them spatially. Multiline Text and Treeview keep native arrows.
+        for widget_class in ("Entry", "TEntry", "TCombobox", "TCheckbutton"):
+            for sequence, direction in (
+                ("<Left>", (-1, 0)), ("<Right>", (1, 0)),
+                ("<Up>", (0, -1)), ("<Down>", (0, 1)),
+            ):
+                self.root.bind_class(
+                    widget_class, sequence,
+                    lambda _e, d=direction: self._focus_direction(*d))
+        self.root.bind_class("TCombobox", "<Key-space>",
+                             self._open_combobox)
+        self.root.bind_class("TCombobox", "<Key-Return>",
+                             self._open_combobox)
+        self.root.bind_class("Treeview", "<FocusIn>",
+                             self._prepare_treeview, add="+")
+        self.root.bind_class("Treeview", "<Key-space>",
+                             self._select_treeview_item)
+        self.root.bind_class("Treeview", "<Key-Return>",
+                             self._select_treeview_item)
+        self.root.bind_class("Treeview", "<Key-Up>",
+                             lambda e: self._move_treeview(e, -1))
+        self.root.bind_class("Treeview", "<Key-Down>",
+                             lambda e: self._move_treeview(e, 1))
+
+    @staticmethod
+    def _open_combobox(event) -> str:
+        """Open a focused ttk Combobox without requiring the mouse."""
+        try:
+            event.widget.tk.call("ttk::combobox::Post", event.widget._w)
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _prepare_treeview(self, event) -> None:
+        tree = event.widget
+        self.root.after_idle(lambda: self._select_treeview_item_for(tree))
+
+    def _select_treeview_item(self, event) -> str:
+        self._select_treeview_item_for(event.widget)
+        return "break"
+
+    @staticmethod
+    def _select_treeview_item_for(tree: ttk.Treeview) -> None:
+        """Ensure a keyboard-focused table has one usable active row."""
+        try:
+            item = tree.focus()
+            if not item:
+                rows = tree.get_children()
+                item = rows[0] if rows else ""
+            if item:
+                tree.focus(item)
+                tree.selection_set(item)
+                tree.see(item)
+        except tk.TclError:
+            pass
+
+    def _move_treeview(self, event, step: int) -> str:
+        """Move within a table, then leave it at the first/last row."""
+        tree = event.widget
+        try:
+            rows: list[str] = []
+
+            def append_visible(parent: str = "") -> None:
+                for item in tree.get_children(parent):
+                    rows.append(item)
+                    if tree.item(item, "open"):
+                        append_visible(item)
+
+            append_visible()
+            current = tree.focus()
+            if not rows:
+                return self._focus_direction(0, step)
+            index = rows.index(current) if current in rows else (
+                -1 if step > 0 else len(rows))
+            target = index + step
+            if 0 <= target < len(rows):
+                item = rows[target]
+                tree.focus(item)
+                tree.selection_set(item)
+                tree.see(item)
+            else:
+                return self._focus_direction(0, step)
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _remember_navigation_focus(self, event) -> None:
+        if getattr(event.widget, "_keyboard_nav", False):
+            self._last_nav_focus = event.widget
+        self.root.after_idle(lambda w=event.widget: self._reveal_focus(w))
+
+    @staticmethod
+    def _reveal_focus(widget: tk.Widget) -> None:
+        """Reveal a focused control through every nested scroll container."""
+        target = widget
+        owner = getattr(widget, "master", None)
+        while owner is not None:
+            if isinstance(owner, ScrollFrame):
+                owner.see(target)
+                target = owner
+            owner = getattr(owner, "master", None)
+
+    def _restore_navigation_focus(self, _event=None) -> str:
+        """Leave an editor and return to the last button/tab used."""
+        target = self._last_nav_focus
+        try:
+            if target is not None and target in self._focus_widgets():
+                self._focus_widget(target)
+                return "break"
+        except tk.TclError:
+            pass
+        for widget in self._focus_widgets():
+            if getattr(widget, "_keyboard_nav", False):
+                self._focus_widget(widget)
+                self._last_nav_focus = widget
+                break
+        return "break"
+
+    def _focus_widgets(self) -> list[tk.Widget]:
+        """Return visible, useful controls; skip Tk's phantom focus stops."""
+        widgets: list[tk.Widget] = []
+        inputs = (tk.Entry, tk.Text, ttk.Entry, ttk.Combobox,
+                  ttk.Checkbutton, ttk.Treeview)
+        page = self._pages.get(self._active) if self._active else None
+        if page is None:
+            return widgets
+
+        def managed(widget: tk.Widget) -> bool:
+            current = widget
+            while current is not page:
+                try:
+                    if not current.winfo_manager():
+                        return False
+                except tk.TclError:
+                    return False
+                current = getattr(current, "master", None)
+                if current is None:
+                    return False
+            return True
+
+        def visit(parent: tk.Widget) -> None:
+            for widget in parent.winfo_children():
+                visit(widget)
+                if not (getattr(widget, "_keyboard_nav", False)
+                        or isinstance(widget, inputs)):
+                    continue
+                if getattr(widget, "_enabled", True) is False:
+                    continue
+                try:
+                    if not managed(widget):
+                        continue
+                    if isinstance(widget, ttk.Widget):
+                        if widget.instate(["disabled"]):
+                            continue
+                except (KeyError, tk.TclError):
+                    continue
+                if not isinstance(widget, ttk.Widget):
+                    try:
+                        if str(widget.cget("state")) == "disabled":
+                            continue
+                    except tk.TclError:
+                        pass
+                widgets.append(widget)
+
+        try:
+            visit(page)
+        except tk.TclError:
+            return []
+        return widgets
+
+    def _focus_step(self, step: int) -> str:
+        """Move focus in visual reading order, not Tk creation order."""
+        widgets = self._focus_widgets()
+        if not widgets:
+            return "break"
+        widgets.sort(key=lambda w: self._widget_rect(w)[1::-1])
+        focused = self.root.focus_get()
+        index = widgets.index(focused) if focused in widgets else (-1 if step > 0 else 0)
+        self._focus_widget(widgets[(index + step) % len(widgets)])
+        return "break"
+
+    def _focus_widget(self, widget: tk.Widget) -> None:
+        """Reveal an offscreen control before asking Tk to focus it."""
+        self._reveal_focus(widget)
+        try:
+            self.root.update_idletasks()
+            widget.focus_set()
+        except tk.TclError:
+            pass
+
+    def _focus_first_action(self, page_key: str | None = None) -> str:
+        """Focus the first visible button on the current page."""
+        if page_key is not None and page_key != self._active:
+            return "break"
+        actions = [w for w in self._focus_widgets()
+                   if getattr(w, "_keyboard_nav", False)]
+        if actions:
+            actions.sort(key=lambda w: self._widget_rect(w)[1::-1])
+            self._focus_widget(actions[0])
+        return "break"
+
+    def _start_direction(self, dx: int, dy: int) -> str | None:
+        """Let an arrow start navigation when no visible control has focus."""
+        if self.root.focus_get() not in self._focus_widgets():
+            return self._focus_first_action()
+        return None
+
+    def _focus_direction(self, dx: int, dy: int) -> str:
+        """Move through the visual row/column containing the focused control."""
+        focused = self.root.focus_get()
+        widgets = self._focus_widgets()
+        if focused not in widgets:
+            return self._focus_step(1)
+        left, top, right, bottom = self._widget_rect(focused)
+        x = (left + right) / 2
+        y = (top + bottom) / 2
+        choices = []
+        for widget in widgets:
+            if widget is focused:
+                continue
+            wl, wt, wr, wb = self._widget_rect(widget)
+            wx = (wl + wr) / 2
+            wy = (wt + wb) / 2
+            forward = (wx - x) * dx + (wy - y) * dy
+            if forward <= 0:
+                continue
+            if dx:
+                aligned = min(bottom, wb) > max(top, wt)
+                gap = max(0, wl - right) if dx > 0 else max(0, left - wr)
+                sideways = abs(wy - y)
+            else:
+                aligned = min(right, wr) > max(left, wl)
+                gap = max(0, wt - bottom) if dy > 0 else max(0, top - wb)
+                sideways = abs(wx - x)
+            choices.append((0 if aligned else 1, gap, sideways, widget))
+        if choices:
+            self._focus_widget(min(choices, key=lambda item: item[:3])[3])
+        return "break"
+
+    def _widget_rect(self, widget: tk.Widget) -> tuple[int, int, int, int]:
+        """Page-local geometry that remains valid for offscreen widgets."""
+        x = y = 0
+        current: tk.Widget | None = widget
+        page = self._pages.get(self._active) if self._active else None
+        while current is not None and current is not page:
+            try:
+                x += current.winfo_x()
+                y += current.winfo_y()
+            except tk.TclError:
+                break
+            current = getattr(current, "master", None)
+        return x, y, x + widget.winfo_width(), y + widget.winfo_height()
+
+    def _cycle_page(self, step: int) -> str:
+        keys = tuple(PAGES)
+        current = keys.index(self._active) if self._active in keys else 0
+        self.show_page(keys[(current + step) % len(keys)])
+        return "break"
 
     def _create_page(self, key: str):
         """Build and cache one page without making it visible."""
@@ -373,60 +699,37 @@ class App:
         cls = PAGES[key][1]
         page = cls(self.content, self.ctx)
         self._pages[key] = page
-        log.debug("Built %s page in %.1f ms", key,
-                  (time.perf_counter() - started) * 1000)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        self._page_build_ms[key] = elapsed_ms
+        log.info("Built %s page in %.1f ms", key, elapsed_ms)
         return page
 
-    def _start_prewarm(self) -> None:
-        """Build hidden pages incrementally after the first page has painted.
-
-        A separate ``after`` callback is used for every page so Tk can process
-        redraws and input between builds.  Page ``on_show`` hooks deliberately
-        remain navigation-only: prewarming must not trigger scans or network
-        work.
-        """
+    def _schedule_prewarm(self, delay: int = 200) -> None:
         self._cancel_prewarm()
-        keys = list(PAGES)
-        active = keys.index(self._active) if self._active in PAGES else 0
-        ordered = keys[active + 1:] + keys[:active]
-        self._prewarm_queue = [key for key in ordered
+        priority = ("profiles", "playground", "runtime", "settings",
+                    "dashboard")
+        self._prewarm_queue = [key for key in priority
                                if key not in self._pages]
-        if not self._prewarm_queue:
-            return
-        self._set_prewarm_status(0, len(self._prewarm_queue))
-        self._prewarm_id = self.root.after(
-            _PREWARM_DELAY_MS, self._prewarm_next)
+        if self._prewarm_queue:
+            self._prewarm_id = self.root.after(delay, self._prewarm_next)
 
     def _prewarm_next(self) -> None:
         self._prewarm_id = None
-        total = len(PAGES) - 1
-        while self._prewarm_queue:
-            key = self._prewarm_queue.pop(0)
-            if key not in self._pages:
-                self._create_page(key)
-                break
-
-        remaining = sum(key not in self._pages for key in self._prewarm_queue)
-        done = total - remaining
+        if not self._prewarm_queue or self._closing or self._rebuilding:
+            return
+        key = self._prewarm_queue.pop(0)
+        if key not in self._pages:
+            self._create_page(key)
         if self._prewarm_queue:
-            self._set_prewarm_status(done, total)
-            self._prewarm_id = self.root.after(
-                _PREWARM_STEP_MS, self._prewarm_next)
-        else:
-            self._sb_right.configure(text=t("Interface ready"))
-            self._prewarm_id = self.root.after(
-                1200, lambda: self._sb_right.configure(text=""))
-
-    def _set_prewarm_status(self, done: int, total: int) -> None:
-        self._sb_right.configure(
-            text=t("Preparing interface… {done}/{total}",
-                   done=done, total=total))
+            # Give Tk at least one short interaction window; expensive pages
+            # earn proportionally more recovery time before the next build.
+            pause = max(40, min(200, round(self._page_build_ms.get(key, 40))))
+            self._prewarm_id = self.root.after(pause, self._prewarm_next)
 
     def _cancel_prewarm(self) -> None:
-        prewarm_id = getattr(self, "_prewarm_id", None)
-        if prewarm_id is not None:
+        if self._prewarm_id is not None:
             try:
-                self.root.after_cancel(prewarm_id)
+                self.root.after_cancel(self._prewarm_id)
             except Exception:
                 pass
         self._prewarm_id = None
@@ -462,7 +765,7 @@ class App:
         # of "stopped", so normalise here — the one place every path converges.
         status = getattr(status, "value", status)
         self._sb_dot.set(status)
-        self._sb_text.configure(text=f"server · {status}")
+        self._sb_text.configure(text=f"server · {status_label(status).lower()}")
         self._head_dot.configure(fg={
             "running": c["ok"], "starting": c["warn"], "stopping": c["warn"],
             "error": c["error"]}.get(status, c["faint"]))
@@ -483,19 +786,35 @@ class App:
             key = "dashboard"
         if self._active == key:
             return
+        self._cancel_prewarm()
+        if key not in self._pages:
+            # Keep the current page painted while the first build completes.
+            self._create_page(key)
         if self._active:
-            self._pages[self._active].pack_forget()
+            old_page = self._pages[self._active]
+            old_page._visible = False
+            if hasattr(old_page, "on_hide"):
+                old_page.on_hide()
+            old_page.pack_forget()
             self._nav[self._active].set_active(False)
 
-        if key not in self._pages:
-            self._create_page(key)
         page = self._pages[key]
         page.pack(fill="both", expand=True)
         self._nav[key].set_active(True)
-        self._scroll_to_nav(key)
         self._active = key
+        page._visible = True
+        self._set_monitoring_active(key == "dashboard")
         if hasattr(page, "on_show"):
             page.on_show()
+        self.root.after_idle(lambda k=key: self._scroll_to_nav(k))
+        self.root.after_idle(lambda k=key: self._focus_first_action(k))
+        self._schedule_prewarm()
+
+    def _set_monitoring_active(self, active: bool) -> None:
+        for name in ("gpu_monitor", "system_monitor"):
+            monitor = self.ctx.services.get(name)
+            if monitor is not None:
+                monitor.set_active(active)
 
     # ── Event pump / lifecycle ───────────────────────────────────────────────
 
@@ -526,7 +845,10 @@ class App:
         return False
 
     def _on_unmap(self, event) -> None:
-        if event.widget is not self.root or self.root.state() != "iconic":
+        if event.widget is not self.root:
+            return
+        self._set_monitoring_active(False)
+        if self.root.state() != "iconic":
             return
         cfg = self.ctx.services.get("config")
         if cfg is None or not cfg.get().minimize_to_tray:
@@ -535,10 +857,15 @@ class App:
             self._tray.announce_hidden()
             self.root.withdraw()
 
+    def _on_map(self, event) -> None:
+        if event.widget is self.root:
+            self._set_monitoring_active(self._active == "dashboard")
+
     def _on_tray_restore(self, _data) -> None:
         self.root.deiconify()
         self.root.state("normal")
         self.root.lift()
+        self._set_monitoring_active(self._active == "dashboard")
 
     def _on_tray_start(self, _data) -> None:
         server = self.ctx.services.get("server")
@@ -560,6 +887,7 @@ class App:
             return
         self._closing = True
         self._cancel_prewarm()
+        self._set_monitoring_active(False)
         from llama_router.core.storage import db_write
         try:
             db_write(self.ctx.paths.db_path, _STATE_KEY,

@@ -96,10 +96,14 @@ class RuntimePage(Page):
 
         self._releases: list[dict] = []
         self._fetched = False
+        self._pending_progress: dict[str, dict] = {}
 
-        self.subscribe("runtime_added", lambda d: self._refresh_installed())
-        self.subscribe("runtime_deleted", lambda d: self._refresh_installed())
-        self.subscribe("runtime_activated", lambda d: self._refresh_installed())
+        self.subscribe("runtime_added",
+                       self.when_visible(lambda d: self._refresh_installed()))
+        self.subscribe("runtime_deleted",
+                       self.when_visible(lambda d: self._refresh_installed()))
+        self.subscribe("runtime_activated",
+                       self.when_visible(lambda d: self._refresh_installed()))
         self.subscribe("gh_releases", self._on_releases)
         self.subscribe("download_progress", self._on_progress)
         self._refresh_installed()
@@ -202,6 +206,9 @@ class RuntimePage(Page):
     # ── Download progress strip ──────────────────────────────────────────────
 
     def _on_progress(self, d: dict) -> None:
+        if not self._visible:
+            self._pending_progress[d["id"]] = d
+            return
         c = self.c
         dl_id = d["id"]
         state = d["state"]
@@ -240,6 +247,9 @@ class RuntimePage(Page):
 
     def on_show(self) -> None:
         self._refresh_installed()
+        pending, self._pending_progress = self._pending_progress, {}
+        for progress in pending.values():
+            self._on_progress(progress)
         if not self._fetched and self._auto_check():
             self._fetched = True
             self._fetch()

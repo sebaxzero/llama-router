@@ -30,6 +30,7 @@ class PlaygroundPage(Page):
         self._attachments: list[dict] = []   # {"name", "content", "chars"}
         self._streaming = False
         self._stream_id: int | None = None
+        self._stream_dirty = False
         self._embedded: list[tk.Widget] = []  # widgets inside the transcript
         self._sidebar_open = False
         self._build()
@@ -38,8 +39,10 @@ class PlaygroundPage(Page):
         self._refresh_models()
         self._sync_server_state()
 
-        self.subscribe("server_status", lambda _d: self._sync_server_state())
-        self.subscribe("server_health", lambda _d: self._refresh_models())
+        self.subscribe("server_status",
+                       self.when_visible(lambda _d: self._sync_server_state()))
+        self.subscribe("server_health",
+                       self.when_visible(lambda _d: self._refresh_models()))
         self.subscribe("pg_token", self._on_token)
         self.subscribe("pg_done", self._on_done)
         self.subscribe("pg_error", self._on_error)
@@ -335,6 +338,9 @@ class PlaygroundPage(Page):
         if not self._streaming or data.get("session") != self._stream_id:
             return
         self._messages[-1]["content"] += data["text"]
+        if not self._visible:
+            self._stream_dirty = True
+            return
         self._text.configure(state="normal")
         self._text.insert("end", data["text"],
                           ("assistant", f"m{len(self._messages) - 1}"))
@@ -346,6 +352,11 @@ class PlaygroundPage(Page):
             return
         self._messages[-1]["content"] = data.get("text", "")
         self._messages[-1]["stats"] = data.get("stats") or {}
+        if not self._visible:
+            self._streaming = False
+            self._stream_dirty = True
+            self._autosave()
+            return
         self._finish()
         self._render()
         self._autosave()
@@ -618,6 +629,9 @@ class PlaygroundPage(Page):
         self._render()
 
     def on_show(self) -> None:
+        if self._stream_dirty:
+            self._render()
+            self._stream_dirty = False
         self._refresh_models()
         self._sync_server_state()
 

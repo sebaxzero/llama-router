@@ -198,6 +198,8 @@ class PillButton(tk.Canvas):
         self._kind = kind
         self._command = command
         self._enabled = True
+        self._focused = False
+        self._keyboard_nav = True
         self._padx = padx
         self._font = theme.mono(size, "bold")
 
@@ -205,7 +207,8 @@ class PillButton(tk.Canvas):
         f = tkfont.Font(font=self._font)
         w = f.measure(text) + 2 * padx
         super().__init__(parent, width=w, height=height,
-                         bg=parent.cget("bg"), highlightthickness=0, bd=0)
+                         bg=parent.cget("bg"), highlightthickness=0, bd=0,
+                         takefocus=bool(command))
         self._bw, self._bh = w, height
         self._text = text
         self._draw("normal")
@@ -213,6 +216,10 @@ class PillButton(tk.Canvas):
         self.bind("<Enter>", lambda e: self._hover(True))
         self.bind("<Leave>", lambda e: self._hover(False))
         self.bind("<Button-1>", self._on_click)
+        self.bind("<Key-space>", self._on_click)
+        self.bind("<Key-Return>", self._on_click)
+        self.bind("<FocusIn>", lambda _e: self._set_focused(True))
+        self.bind("<FocusOut>", lambda _e: self._set_focused(False))
         self.configure(cursor="hand2")
 
     def _palette(self, state: str) -> tuple[str, str, str]:
@@ -226,7 +233,7 @@ class PillButton(tk.Canvas):
             fg = c["accent_hi"] if state == "hover" else c["accent"]
             fill = c["surface_hi"] if state == "hover" else c["surface"]
             return fill, fg, fg
-        if state == "hover":
+        if state in ("hover", "focus"):
             return c["surface_hi"], c["muted"], c["text"]
         return c["surface"], c["border"], c["text"]
 
@@ -236,33 +243,43 @@ class PillButton(tk.Canvas):
         r = self._RADIUS
         rounded_rect(self, 1, 1, self._bw - 2, self._bh - 2, r,
                      fill=fill, outline=outline)
+        if state == "focus":
+            ring = (self._c["on_accent"] if self._kind == "primary"
+                    else self._c["accent_hi"])
+            rounded_rect(self, 4, 4, self._bw - 5, self._bh - 5,
+                         max(1, r - 1), fill="", outline=ring, width=2)
         self.create_text(self._bw // 2, self._bh // 2, text=self._text,
                          fill=fg, font=self._font)
 
     def _hover(self, on: bool) -> None:
         if self._enabled:
-            self._draw("hover" if on else "normal")
+            self._draw("hover" if on else ("focus" if self._focused else "normal"))
+
+    def _set_focused(self, focused: bool) -> None:
+        self._focused = focused
+        self._draw("focus" if focused else "normal")
 
     def _on_click(self, _e) -> None:
         if self._enabled and self._command:
+            self.focus_set()
             self._command()
 
     def set_enabled(self, enabled: bool) -> None:
         self._enabled = enabled
         self.configure(cursor="hand2" if enabled else "arrow")
-        self._draw("normal")
+        self._draw("focus" if self._focused else "normal")
 
     def set_text(self, text: str) -> None:
         self._text = text.upper()
         f = tkfont.Font(font=self._font)
         self._bw = f.measure(self._text) + 2 * self._padx
         self.configure(width=self._bw)
-        self._draw("normal")
+        self._draw("focus" if self._focused else "normal")
 
     def set_kind(self, kind: str) -> None:
         """Swap the button style in place (used by toggles/segmented controls)."""
         self._kind = kind
-        self._draw("normal")
+        self._draw("focus" if self._focused else "normal")
 
 
 class StatusDot(tk.Canvas):
@@ -304,6 +321,9 @@ class NavItem(tk.Frame):
         self._c = c
         self._command = command
         self._active = False
+        self._focused = False
+        self._keyboard_nav = False
+        self.configure(takefocus=False)
 
         self._label = tk.Label(self, text=label.upper(), bg=c["bg"],
                                fg=c["muted"], font=theme.mono(9, "bold"),
@@ -312,19 +332,29 @@ class NavItem(tk.Frame):
 
         for w in (self, self._label):
             w.bind("<Button-1>", lambda e: self._command())
-            w.bind("<Enter>", lambda e: self._paint(hover=True))
-            w.bind("<Leave>", lambda e: self._paint(hover=False))
+            w.bind("<Enter>",
+                   lambda _e: self._paint(hover=True, focused=self._focused))
+            w.bind("<Leave>",
+                   lambda _e: self._paint(focused=self._focused))
+        self.bind("<Key-space>", lambda _e: self._command())
+        self.bind("<Key-Return>", lambda _e: self._command())
+        self.bind("<FocusIn>", lambda _e: self._set_focused(True))
+        self.bind("<FocusOut>", lambda _e: self._set_focused(False))
         self._paint()
 
     def set_active(self, active: bool) -> None:
         self._active = active
-        self._paint()
+        self._paint(focused=self._focused)
 
-    def _paint(self, hover: bool = False) -> None:
+    def _set_focused(self, focused: bool) -> None:
+        self._focused = focused
+        self._paint(focused=focused)
+
+    def _paint(self, hover: bool = False, focused: bool = False) -> None:
         c = self._c
         if self._active:
             bg, fg = c["accent"], c["on_accent"]
-        elif hover:
+        elif hover or focused:
             bg, fg = c["surface_hi"], c["text"]
         else:
             bg, fg = c["bg"], c["muted"]
@@ -391,6 +421,8 @@ class ScrollFrame(tk.Frame):
         self._canvas.bind("<Configure>", self._on_canvas)
         # Wheel scrolling anywhere over the frame
         self._canvas.bind_all("<MouseWheel>", self._on_wheel, add="+")
+        self._canvas.bind_all("<Button-4>", self._on_wheel, add="+")
+        self._canvas.bind_all("<Button-5>", self._on_wheel, add="+")
 
 
     def _on_body(self, _e) -> None:
@@ -412,6 +444,36 @@ class ScrollFrame(tk.Frame):
         if steps:
             self._canvas.yview_scroll(steps, "units")
 
+    def see(self, widget: tk.Widget, margin: int = 12) -> None:
+        """Scroll just enough to reveal a focused descendant."""
+        try:
+            top = 0
+            current: tk.Widget | None = widget
+            while current is not self.body:
+                if current is None:
+                    return
+                top += current.winfo_y()
+                current = getattr(current, "master", None)
+            bottom = top + widget.winfo_height()
+            view_top = self._canvas.canvasy(0)
+            view_height = self._canvas.winfo_height()
+            view_bottom = view_top + view_height
+            region = self._canvas.bbox("all")
+            if not region or region[3] <= view_height:
+                return
+            target = None
+            if top - margin < view_top:
+                target = top - margin
+            elif bottom + margin > view_bottom:
+                target = bottom + margin - view_height
+            if target is not None:
+                content_height = max(1, region[3] - region[1])
+                self._canvas.yview_moveto(
+                    max(0.0, min(1.0,
+                                 (target - region[1]) / content_height)))
+        except tk.TclError:
+            pass
+
     def _on_wheel(self, e) -> None:
         # bind_all outlives the page: guard against destroyed instances, and
         # only react while the pointer is inside this scroller.
@@ -432,7 +494,10 @@ class ScrollFrame(tk.Frame):
             if isinstance(w, ScrollFrame):
                 if w is not self:
                     return
-                self.scroll_units(-1 * (e.delta // 120))
+                delta = getattr(e, "delta", 0)
+                steps = -1 if getattr(e, "num", None) == 4 else (
+                    1 if getattr(e, "num", None) == 5 else -1 * (delta // 120))
+                self.scroll_units(steps)
                 return
             w = getattr(w, "master", None)
 

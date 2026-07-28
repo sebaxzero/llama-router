@@ -165,10 +165,21 @@ def main() -> int:
         _regen_preset()
 
     for evt in ("model_updated", "model_removed", "profile_created",
-                "profile_updated", "profile_deleted", "profiles_reset",
-                "config_saved"):
+                "profile_updated", "profile_deleted", "profiles_reset"):
         events.subscribe(evt, _regen_preset)
     events.subscribe("models_scanned", _on_models_scanned)
+
+    last_global_params = dict(config.get().global_params)
+
+    def _on_config_saved(data) -> None:
+        """Only routing parameters affect models-preset.ini."""
+        nonlocal last_global_params
+        current = dict((data or {}).get("global_params", {}))
+        if current != last_global_params:
+            last_global_params = current
+            _regen_preset()
+
+    events.subscribe("config_saved", _on_config_saved)
 
     for m in models.list():
         profiles.ensure_defaults(m.id)
@@ -191,11 +202,12 @@ def main() -> int:
         config, server, profiles, events, paths)
 
     from llama_router.services.gpu_monitor import GpuMonitor
-    gpu = GpuMonitor(events)
+    services["gpu_monitor"] = gpu = GpuMonitor(events)
     gpu.start()
 
     from llama_router.services.system_monitor import SystemMonitor
-    SystemMonitor(events).start()
+    services["system_monitor"] = system = SystemMonitor(events)
+    system.start()
 
     from llama_router.ui.app import App, AppContext
     ctx = AppContext(paths=paths, events=events, logs=logs,
