@@ -470,8 +470,10 @@ class ProfilesPage(Page):
         self._preset_view: PresetPage | None = PresetPage(
             self._preset_host, self.ctx, embedded=True)
         self._preset_view.pack(fill="both", expand=True)
+        self._bind_outer_scroll(self._preset_view._text)
         self._library_view: ModelsPage | None = None
         self._compact_profiles: bool | None = None
+        self._shown_once = False
         self._cols.bind("<Configure>", self._on_profiles_resize, add="+")
         self.after_idle(self._on_profiles_resize)
         self.subscribe("preset_imported", self._on_preset_imported)
@@ -493,8 +495,8 @@ class ProfilesPage(Page):
                                         sticky="nsew", padx=0)
             self._preset_host.grid_configure(row=1, column=1, columnspan=2,
                                               sticky="nsew", pady=(12, 0))
-            self._cols.body.rowconfigure(0, weight=3)
-            self._cols.body.rowconfigure(1, weight=2)
+            self._cols.body.rowconfigure(0, weight=0)
+            self._cols.body.rowconfigure(1, weight=0)
         else:
             self._profile_list.grid_configure(row=0, column=0, rowspan=1,
                                               sticky="nw", padx=(0, 14))
@@ -537,12 +539,12 @@ class ProfilesPage(Page):
 
     def _build_editor(self) -> None:
         c = self.c
-        # One scroll surface keeps every profile control reachable in a small
-        # window; the advanced portion must not be the only scrollable area.
-        self._editor_body = ScrollFrame(self._editor,
-                                        dict(c, bg=c["surface"]))
+        # The workspace's outer ScrollFrame owns vertical movement. Keeping
+        # the editor as a plain frame avoids adjacent nested scrollbars when
+        # the preset stacks below it in compact mode.
+        self._editor_body = tk.Frame(self._editor, bg=c["surface"])
         self._editor_body.pack(fill="both", expand=True, padx=18, pady=16)
-        outer = self._editor_body.body
+        outer = self._editor_body
 
         top = tk.Frame(outer, bg=c["surface"])
         top.pack(fill="x")
@@ -556,7 +558,7 @@ class ProfilesPage(Page):
             command=self._reset_profile)
         reset_profile.pack(side="right", padx=(0, 10))
         Tooltip(reset_profile, c,
-                t("Clear every custom parameter while keeping the profile name and route alias."))
+                t("Restore the default parameters while keeping the profile name and route alias."))
 
         self._copy_map: dict[str, str] = {}  # display → profile_id
         self._presets = _load_sampling_presets()
@@ -668,7 +670,12 @@ class ProfilesPage(Page):
         self._copy_cb.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         self._copy_cb.bind("<<ComboboxSelected>>", self._on_copy_from)
 
-        toggle = tk.Frame(outer, bg=c["surface"], cursor="hand2")
+        toggle = tk.Frame(
+            outer, bg=c["surface"], cursor="hand2", takefocus=True,
+            highlightthickness=1, highlightbackground=c["border"],
+            highlightcolor=c["accent_hi"])
+        toggle._keyboard_nav = True
+        self._params_toggle_host = toggle
         toggle.pack(fill="x", pady=(0, 8), before=self._quick_cards[0])
         self._params_toggle = tk.Label(
             toggle, text="▾  " + t("Advanced parameters"),
@@ -676,7 +683,9 @@ class ProfilesPage(Page):
             cursor="hand2")
         self._params_toggle.pack(anchor="w")
         for widget in (toggle, self._params_toggle):
-            widget.bind("<Button-1>", lambda _e: self._toggle_params())
+            widget.bind("<Button-1>", self._activate_params_toggle)
+        toggle.bind("<Key-space>", self._activate_params_toggle)
+        toggle.bind("<Key-Return>", self._activate_params_toggle)
 
         for title, fields in _SECTIONS:
             group_title = next(group for group, sections in
@@ -774,12 +783,18 @@ class ProfilesPage(Page):
                                      fg=c["muted"], font=theme.ui(10))
 
     def _reset_params(self, keys: set[str] | None = None) -> None:
+        profile = self._profiles.get(self._current) if self._current else None
+        defaults = (self._profiles.template_params(profile.name)
+                    if profile else {})
         params = self._collect_params()
         if keys is None:
-            params.clear()
+            params = defaults
         else:
             for key in keys:
-                params.pop(key, None)
+                if key in defaults:
+                    params[key] = defaults[key]
+                else:
+                    params.pop(key, None)
         self._loading_profile = True
         try:
             self._fill_params(params)
@@ -790,10 +805,15 @@ class ProfilesPage(Page):
     def _reset_profile(self) -> None:
         if not self._current or not messagebox.askyesno(
                 t("Reset profile"),
-                t("Clear all custom parameters for this profile?"),
+                t("Restore the default parameters for this profile?"),
                 parent=self):
             return
         self._reset_params()
+
+    def _activate_params_toggle(self, _event=None) -> str:
+        self._params_toggle_host.focus_set()
+        self._toggle_params()
+        return "break"
 
     def _toggle_params(self) -> None:
         params = self._collect_params()
@@ -851,9 +871,7 @@ class ProfilesPage(Page):
                     columnspan=columnspan)
             # A wheel over a closed combobox normally changes its selection.
             # In the profile form it should continue scrolling the editor.
-            cb.bind("<MouseWheel>", self._scroll_editor_from_choice)
-            cb.bind("<Button-4>", lambda _e: self._scroll_editor_from_choice(-1))
-            cb.bind("<Button-5>", lambda _e: self._scroll_editor_from_choice(1))
+            self._bind_outer_scroll(cb)
             self._add_param_tooltip(cb, key)
             self._fields[key] = (kind, cb, extra)
         elif kind == "file":
@@ -956,8 +974,15 @@ class ProfilesPage(Page):
         else:
             steps = -1 if event_or_steps.delta > 0 else (
                 1 if event_or_steps.delta < 0 else 0)
-        self._editor_body.scroll_units(steps)
+        self._cols.scroll_units(steps)
         return "break"
+
+    def _bind_outer_scroll(self, widget: tk.Widget) -> None:
+        widget.bind("<MouseWheel>", self._scroll_editor_from_choice)
+        widget.bind("<Button-4>",
+                    lambda _e: self._scroll_editor_from_choice(-1))
+        widget.bind("<Button-5>",
+                    lambda _e: self._scroll_editor_from_choice(1))
 
     def _text(self, parent: tk.Widget, height: int) -> tk.Text:
         c = self.c
@@ -966,6 +991,7 @@ class ProfilesPage(Page):
                       font=theme.mono(9), wrap="none",
                       highlightthickness=1, highlightbackground=c["border"],
                       highlightcolor=c["accent_dn"])
+        self._bind_outer_scroll(txt)
         txt.pack(fill="x")
         return txt
 
@@ -1339,5 +1365,10 @@ class ProfilesPage(Page):
         self._refresh_tree(keep=sel[0] if sel else None)
 
     def on_show(self) -> None:
+        self.update_idletasks()
+        self._on_profiles_resize()
+        if not self._shown_once:
+            self._cols.scroll_to_start()
+            self._shown_once = True
         sel = self._tree.selection()
         self._refresh_tree(keep=sel[0] if sel else None)

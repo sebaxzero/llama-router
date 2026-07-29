@@ -357,7 +357,7 @@ class StatusDot(tk.Canvas):
         self.create_oval(m - 4, m - 4, m + 4, m + 4, fill=color, outline="")
 
 
-class NavItem(tk.Frame):
+class NavItem(tk.Button):
     """Top tab: mono uppercase; the active tab is a solid accent block with
     dark text. Inactive tabs get a subtle bottom-border glow on hover.
 
@@ -368,30 +368,33 @@ class NavItem(tk.Frame):
 
     def __init__(self, parent: tk.Widget, c: dict, label: str,
                  command: Callable[[], None]) -> None:
-        super().__init__(parent, bg=c["bg"], cursor="hand2")
         self._c = c
         self._command = command
         self._active = False
         self._focused = False
-        self._keyboard_nav = False
-        self.configure(takefocus=False)
+        self._keyboard_nav = True
+        super().__init__(
+            parent, text=label.upper(), command=self._activate,
+            bg=c["bg"], fg=c["muted"], activebackground=c["surface_hi"],
+            activeforeground=c["text"], font=theme.mono(9, "bold"),
+            padx=14, pady=8, relief="flat", overrelief="flat", bd=0,
+            highlightthickness=2, highlightbackground=c["bg"],
+            highlightcolor=c["accent_hi"], takefocus=True, cursor="hand2")
 
-        self._label = tk.Label(self, text=label.upper(), bg=c["bg"],
-                               fg=c["muted"], font=theme.mono(9, "bold"),
-                               padx=14, pady=8)
-        self._label.pack()
-
-        for w in (self, self._label):
-            w.bind("<Button-1>", lambda e: self._command())
-            w.bind("<Enter>",
-                   lambda _e: self._paint(hover=True, focused=self._focused))
-            w.bind("<Leave>",
-                   lambda _e: self._paint(focused=self._focused))
-        self.bind("<Key-space>", lambda _e: self._command())
-        self.bind("<Key-Return>", lambda _e: self._command())
+        self.bind("<Enter>",
+                  lambda _e: self._paint(hover=True, focused=self._focused))
+        self.bind("<Leave>",
+                  lambda _e: self._paint(focused=self._focused))
+        self.bind("<Key-space>", self._activate)
+        self.bind("<Key-Return>", self._activate)
         self.bind("<FocusIn>", lambda _e: self._set_focused(True))
         self.bind("<FocusOut>", lambda _e: self._set_focused(False))
         self._paint()
+
+    def _activate(self, event=None) -> str | None:
+        self.focus_set()
+        self._command()
+        return "break" if event is not None else None
 
     def set_active(self, active: bool) -> None:
         self._active = active
@@ -409,18 +412,23 @@ class NavItem(tk.Frame):
             bg, fg = c["surface_hi"], c["text"]
         else:
             bg, fg = c["bg"], c["muted"]
-        self.configure(bg=bg)
-        self._label.configure(bg=bg, fg=fg)
+        ring = c["on_accent"] if self._active else c["accent_hi"]
+        self.configure(bg=bg, fg=fg, activebackground=bg,
+                       activeforeground=fg, highlightbackground=bg,
+                       highlightcolor=ring)
 
 
 class PageHeader(tk.Frame):
     """Eyebrow + title + optional subtitle; actions dock on the right."""
 
+    _COMPACT_WIDTH = 860
+
     def __init__(self, parent: tk.Widget, c: dict, eyebrow: str, title: str,
                  subtitle: str = "") -> None:
         super().__init__(parent, bg=c["bg"])
-        left = tk.Frame(self, bg=c["bg"])
-        left.pack(side="left", fill="x", expand=True)
+        self.columnconfigure(0, weight=1)
+        self._left = left = tk.Frame(self, bg=c["bg"])
+        left.grid(row=0, column=0, sticky="ew")
         tk.Label(left, text=theme.track(eyebrow), bg=c["bg"], fg=c["faint"],
                  font=theme.mono(8, "bold")).pack(anchor="w")
         tk.Label(left, text=theme.track(title), bg=c["bg"], fg=c["text"],
@@ -429,7 +437,23 @@ class PageHeader(tk.Frame):
             tk.Label(left, text=subtitle, bg=c["bg"], fg=c["muted"],
                      font=theme.ui(10)).pack(anchor="w", pady=(3, 0))
         self.actions = tk.Frame(self, bg=c["bg"])
-        self.actions.pack(side="right", anchor="s")
+        self.actions.grid(row=0, column=1, sticky="se")
+        self._compact: bool | None = None
+        self.bind("<Configure>", self._on_resize, add="+")
+
+    def _on_resize(self, event) -> None:
+        compact = event.width < self._COMPACT_WIDTH
+        if compact == self._compact:
+            return
+        self._compact = compact
+        if compact:
+            self._left.grid_configure(columnspan=2)
+            self.actions.grid_configure(row=1, column=0, columnspan=2,
+                                        sticky="w", pady=(10, 0))
+        else:
+            self._left.grid_configure(columnspan=1)
+            self.actions.grid_configure(row=0, column=1, columnspan=1,
+                                        sticky="se", pady=0)
 
 
 class AutoScrollbar(ttk.Scrollbar):
@@ -470,11 +494,34 @@ class ScrollFrame(tk.Frame):
         self._win = self._canvas.create_window(0, 0, window=self.body, anchor="nw")
         self.body.bind("<Configure>", self._on_body)
         self._canvas.bind("<Configure>", self._on_canvas)
-        # Wheel scrolling anywhere over the frame
-        self._canvas.bind_all("<MouseWheel>", self._on_wheel, add="+")
-        self._canvas.bind_all("<Button-4>", self._on_wheel, add="+")
-        self._canvas.bind_all("<Button-5>", self._on_wheel, add="+")
+        # Global bindings make wheel/page scrolling work from any descendant.
+        # Keep each Tcl command id so rebuilding a page can remove only the
+        # callbacks owned by this instance.
+        self._global_bindings: list[tuple[str, str]] = []
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self._bind_global(sequence, self._on_wheel)
+        for sequence, action in (("<Prior>", "page-up"),
+                                 ("<Next>", "page-down"),
+                                 ("<Home>", "home"),
+                                 ("<End>", "end")):
+            self._bind_global(
+                sequence, lambda event, a=action: self._on_scroll_key(event, a))
+        self.bind("<Destroy>", self._on_destroy, add="+")
 
+    def _bind_global(self, sequence: str, handler: Callable) -> None:
+        funcid = self.bind_all(sequence, handler, add="+")
+        if funcid:
+            self._global_bindings.append((sequence, funcid))
+
+    def _on_destroy(self, event) -> None:
+        if event.widget is not self:
+            return
+        for sequence, funcid in self._global_bindings:
+            try:
+                self._root()._unbind(("bind", "all", sequence), funcid)
+            except tk.TclError:
+                pass
+        self._global_bindings.clear()
 
     def _on_body(self, _e) -> None:
         self._fit_height()
@@ -497,6 +544,9 @@ class ScrollFrame(tk.Frame):
         """Move the viewport by units for child controls that consume wheels."""
         if steps:
             self._canvas.yview_scroll(steps, "units")
+
+    def scroll_to_start(self) -> None:
+        self._canvas.yview_moveto(0)
 
     def see(self, widget: tk.Widget, margin: int = 12) -> None:
         """Scroll just enough to reveal a focused descendant."""
@@ -554,6 +604,31 @@ class ScrollFrame(tk.Frame):
                 self.scroll_units(steps)
                 return
             w = getattr(w, "master", None)
+
+    def _on_scroll_key(self, _event, action: str) -> str | None:
+        """Page-scroll when focus is in this scroller but not in an editor."""
+        try:
+            focus = self.focus_get()
+        except (tk.TclError, KeyError):
+            return None
+        if focus is None or isinstance(
+                focus, (tk.Text, tk.Entry, ttk.Entry, ttk.Treeview,
+                        ttk.Combobox)):
+            return None
+        owner: tk.Widget | None = focus
+        while owner is not None and not isinstance(owner, ScrollFrame):
+            owner = getattr(owner, "master", None)
+        if owner is not self:
+            return None
+        if action == "page-up":
+            self._canvas.yview_scroll(-1, "pages")
+        elif action == "page-down":
+            self._canvas.yview_scroll(1, "pages")
+        elif action == "home":
+            self._canvas.yview_moveto(0)
+        else:
+            self._canvas.yview_moveto(1)
+        return "break"
 
 
 class SegmentBar(tk.Canvas):

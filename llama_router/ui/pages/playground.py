@@ -138,7 +138,10 @@ class PlaygroundPage(Page):
         self._text = tk.Text(panel, bg=c["inset"], fg=c["text"], bd=0,
                              padx=12, pady=10, font=theme.ui(10), wrap="word",
                              state="disabled", highlightthickness=0,
-                             spacing1=2, spacing3=2)
+                             spacing1=2, spacing3=2, takefocus=True)
+        # Read-only, but still part of keyboard traversal so Shift+F10/Menu
+        # can expose the same message actions as a right click.
+        self._text._focus_when_disabled = True
         vbar = AutoScrollbar(panel, orient="vertical",
                              command=self._text.yview)
         self._text.configure(yscrollcommand=vbar.set)
@@ -154,6 +157,8 @@ class PlaygroundPage(Page):
                                  foreground=c["text"], font=theme.mono(9),
                                  lmargin1=10, lmargin2=10, rmargin=10)
         self._text.bind("<Button-3>", self._on_right_click)
+        self._text.bind("<Shift-F10>", self._on_message_menu_key)
+        self._text.bind("<Key-Menu>", self._on_message_menu_key)
 
         # ── Attachment chips ─────────────────────────────────────────────────
         self._chips = tk.Frame(composer, bg=c["bg"])
@@ -381,8 +386,27 @@ class PlaygroundPage(Page):
 
     def _on_right_click(self, event) -> None:
         idx = self._text.index(f"@{event.x},{event.y}")
-        hit = next((n for n in self._text.tag_names(idx)
-                    if re.fullmatch(r"m\d+", n)), None)
+        self._show_message_menu(self._message_tag_at(idx),
+                                event.x_root, event.y_root)
+
+    def _on_message_menu_key(self, _event=None) -> str:
+        idx = self._text.index("insert")
+        hit = self._message_tag_at(idx)
+        if hit is None and self._messages:
+            idx = self._text.index("end-2c")
+            hit = self._message_tag_at(idx)
+        box = self._text.bbox(idx)
+        x = self._text.winfo_rootx() + (box[0] if box else 12)
+        y = self._text.winfo_rooty() + (box[1] + box[3] if box else 12)
+        self._show_message_menu(hit, x, y)
+        return "break"
+
+    def _message_tag_at(self, index: str) -> str | None:
+        return next((name for name in self._text.tag_names(index)
+                     if re.fullmatch(r"m\d+", name)), None)
+
+    def _show_message_menu(self, hit: str | None,
+                           x_root: int, y_root: int) -> None:
         c = self.c
         menu = tk.Menu(self, tearoff=0, bg=c["surface"], fg=c["text"],
                        activebackground=c["accent"],
@@ -401,7 +425,7 @@ class PlaygroundPage(Page):
             menu.add_separator()
         menu.add_command(label=t("Clear chat"), command=self._clear_chat)
         try:
-            menu.tk_popup(event.x_root, event.y_root)
+            menu.tk_popup(x_root, y_root)
         finally:
             menu.grab_release()
 
@@ -465,10 +489,10 @@ class PlaygroundPage(Page):
             tk.Label(chip, text=f"📎 {a['name']}", bg=c["surface"],
                      fg=c["muted"], font=theme.mono(8)).pack(side="left",
                                                              padx=(8, 4), pady=3)
-            x = tk.Label(chip, text="✕", bg=c["surface"], fg=c["faint"],
-                         font=theme.mono(8), cursor="hand2")
-            x.pack(side="left", padx=(0, 7))
-            x.bind("<Button-1>", lambda _e, item=a: self._drop_chip(item))
+            PillButton(
+                chip, c, "✕", size=7, padx=5, height=22,
+                command=lambda item=a: self._drop_chip(item)).pack(
+                    side="left", padx=(0, 4))
 
     def _drop_chip(self, item: dict) -> None:
         if item in self._attachments:
@@ -529,7 +553,9 @@ class PlaygroundPage(Page):
             row = tk.Frame(
                 self._sess_list, bg=c["surface"], cursor="hand2",
                 highlightbackground=c["request"] if selected else c["border"],
-                highlightthickness=1)
+                highlightcolor=c["accent_hi"], highlightthickness=1,
+                takefocus=True)
+            row._keyboard_nav = True
             row.pack(fill="x", pady=1)
             name = tk.Label(row, text=s.get("name") or s["id"], bg=c["surface"],
                             fg=c["request"] if selected else c["text"],
@@ -541,18 +567,46 @@ class PlaygroundPage(Page):
                             anchor="w")
             meta.pack(fill="x", padx=8, pady=(0, 4))
             for w in (row, name, meta):
-                w.bind("<Button-1>", lambda _e, d=s: self._load_session(d))
-                w.bind("<Button-3>", lambda e, d=s: self._session_menu(e, d))
+                w.bind("<Button-1>",
+                       lambda e, r=row, d=s: self._activate_session(r, d))
+                w.bind("<Button-3>",
+                       lambda e, r=row, d=s: self._session_pointer_menu(e, r, d))
                 w.bind("<Enter>", lambda _e, r=row: self._hover_row(r, True))
                 w.bind("<Leave>", lambda _e, r=row: self._hover_row(r, False))
+            row.bind("<Key-space>",
+                     lambda _e, r=row, d=s: self._activate_session(r, d))
+            row.bind("<Key-Return>",
+                     lambda _e, r=row, d=s: self._activate_session(r, d))
+            row.bind("<Shift-F10>",
+                     lambda _e, r=row, d=s: self._session_keyboard_menu(r, d))
+            row.bind("<Key-Menu>",
+                     lambda _e, r=row, d=s: self._session_keyboard_menu(r, d))
+            row.bind("<FocusIn>", lambda _e, r=row: self._hover_row(r, True))
+            row.bind("<FocusOut>", lambda _e, r=row: self._hover_row(r, False))
+
+    def _activate_session(self, row: tk.Frame, data: dict) -> str:
+        row.focus_set()
+        self._load_session(data)
+        return "break"
 
     def _hover_row(self, row: tk.Frame, on: bool) -> None:
-        bg = self.c["surface_hi"] if on else self.c["surface"]
+        bg = (self.c["surface_hi"]
+              if on or row.focus_get() is row else self.c["surface"])
         row.configure(bg=bg)
         for w in row.winfo_children():
             w.configure(bg=bg)
 
-    def _session_menu(self, event, data: dict) -> None:
+    def _session_pointer_menu(self, event, row: tk.Frame, data: dict) -> str:
+        row.focus_set()
+        self._session_menu(data, event.x_root, event.y_root)
+        return "break"
+
+    def _session_keyboard_menu(self, row: tk.Frame, data: dict) -> str:
+        self._session_menu(data, row.winfo_rootx() + 12,
+                           row.winfo_rooty() + row.winfo_height())
+        return "break"
+
+    def _session_menu(self, data: dict, x_root: int, y_root: int) -> None:
         c = self.c
         menu = tk.Menu(self, tearoff=0, bg=c["surface"], fg=c["text"],
                        activebackground=c["accent"],
@@ -562,7 +616,7 @@ class PlaygroundPage(Page):
         menu.add_command(label=t("Delete"),
                          command=lambda: self._delete_session(data))
         try:
-            menu.tk_popup(event.x_root, event.y_root)
+            menu.tk_popup(x_root, y_root)
         finally:
             menu.grab_release()
 

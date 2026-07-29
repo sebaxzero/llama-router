@@ -33,6 +33,11 @@ CATALOGS: dict[str, dict[str, str]] = {
         "Profiles": "Perfiles",
         "Server": "Servidor",
         "Settings": "Ajustes",
+        "server": "servidor",
+        "runtime": "runtime",
+        "model": "modelo",
+        "profile": "perfil",
+        "local": "local",
         "Preparing interface… {done}/{total}":
             "Preparando interfaz… {done}/{total}",
         "Interface ready": "Interfaz lista",
@@ -72,6 +77,11 @@ CATALOGS: dict[str, dict[str, str]] = {
         "Delete": "Eliminar",
         "Profile": "Perfil",
         "Save profile": "Guardar perfil",
+        "Reset profile": "Restablecer perfil",
+        "Restore the default parameters while keeping the profile name and route alias.":
+            "Restaura los parámetros predeterminados y conserva el nombre y el alias de ruta.",
+        "Restore the default parameters for this profile?":
+            "¿Restaurar los parámetros predeterminados de este perfil?",
         "Saved automatically": "Guardado automático",
         "Saving…": "Guardando…",
         "Back to profiles": "Volver a perfiles",

@@ -64,7 +64,6 @@ class DashboardPage(Page):
         c = self.c
         head = self.header(t("panel"), t("Dashboard"),
                            t("Router status and first steps"))
-        head.actions.pack_configure(anchor="n", pady=(15, 0))
 
         # Live resource meters stay in the fixed portion with server state.
         self._fixed_usage = fixed_usage = tk.Frame(self, bg=c["bg"])
@@ -721,7 +720,12 @@ class DashboardPage(Page):
             (t("Start the server"), t("then point your client at the endpoint"), "dashboard"),
         ]
         for i, (title, desc, page) in enumerate(steps, 1):
-            row = tk.Frame(self._steps_box, bg=c["surface"], cursor="hand2")
+            row = tk.Frame(
+                self._steps_box, bg=c["surface"], cursor="hand2",
+                takefocus=True, highlightthickness=1,
+                highlightbackground=c["border"],
+                highlightcolor=c["accent_hi"])
+            row._keyboard_nav = True
             row.pack(fill="x", pady=3, ipady=4)
             num = tk.Label(row, text=f"{i:02d}", bg=c["surface"], fg=c["accent"],
                            font=theme.mono(10, "bold"))
@@ -736,20 +740,31 @@ class DashboardPage(Page):
                           font=theme.ui(10))
             go.pack(side="right")
             children = (row, num, tt, d, go)
+
+            def _activate(_e=None, r=row, p=page):
+                r.focus_set()
+                self.ctx.navigate(p)
+                return "break"
+
             for w in children:
-                w.bind("<Button-1>", lambda e, p=page: self.ctx.navigate(p))
+                w.bind("<Button-1>", _activate)
+            row.bind("<Key-space>", _activate)
+            row.bind("<Key-Return>", _activate)
 
             def _enter(_e, ch=children):
                 for w in ch:
                     w.configure(bg=c["surface_hi"])
 
             def _leave(_e, ch=children):
+                focused = ch[0].focus_get() is ch[0]
                 for w in ch:
-                    w.configure(bg=c["surface"])
+                    w.configure(bg=c["surface_hi"] if focused else c["surface"])
 
             for w in children:
                 w.bind("<Enter>", _enter)
                 w.bind("<Leave>", _leave)
+            row.bind("<FocusIn>", _enter)
+            row.bind("<FocusOut>", _leave)
 
     # ── Events / actions ─────────────────────────────────────────────────────
 

@@ -77,6 +77,15 @@ class ProfileManager:
             self._profiles[p.id] = p
         self._persist()
 
+    @staticmethod
+    def template_params(name: str) -> dict:
+        """Return a fresh copy of the built-in profile parameters."""
+        folded = name.casefold()
+        for template in _DEFAULTS:
+            if template["name"].casefold() == folded:
+                return dict(template["params"])
+        return {}
+
     def list(self, model_id: str | None = None) -> list[Profile]:
         profiles = list(self._profiles.values())
         if model_id:

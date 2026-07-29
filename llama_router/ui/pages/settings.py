@@ -11,12 +11,16 @@ from llama_router.ui.pages.base import PAGE_PAD, Page
 from llama_router.ui.widgets import CollapsibleCard, PillButton, ScrollFrame
 
 _FIELD_W = 26   # entry width in chars
+_SERVER_COMPACT_WIDTH = 780
+_API_ACTIONS_COMPACT_WIDTH = 360
 
 
 class SettingsPage(Page):
     def __init__(self, parent: tk.Widget, ctx) -> None:
         super().__init__(parent, ctx)
         self._autosave_id: str | None = None
+        self._server_layout_id: str | None = None
+        self._api_layout_id: str | None = None
         self._saved_form: dict = {}
         self._build()
 
@@ -94,6 +98,9 @@ class SettingsPage(Page):
 
         s = cfg.server
         grid2 = self._grid(srv_card.content, two_columns=True)
+        self._server_grid = grid2
+        self._server_compact: bool | None = None
+        grid2.bind("<Configure>", self._schedule_server_layout, add="+")
         self._expose = self._combo(grid2, 0, t("Network exposure"),
                                    [t("This machine only"), t("Local network"),
                                     t("Custom host")],
@@ -126,6 +133,7 @@ class SettingsPage(Page):
         self._show_api_details.trace_add(
             "write", lambda *_: self._apply_api_details_visibility())
         self._sync_host()
+        self.after_idle(self._layout_server_grid)
         self._saved_form = self._serialize()
         self._wire_autosave()
 
@@ -198,15 +206,21 @@ class SettingsPage(Page):
         g = tk.Frame(parent, bg=self.c["surface"])
         g.pack(fill="x", pady=(12, 2))
         g._two_columns = two_columns
-        if two_columns:
-            g.columnconfigure(0, minsize=130)
-            g.columnconfigure(1, weight=1, uniform="settings-values")
-            g.columnconfigure(2, minsize=130)
-            g.columnconfigure(3, weight=1, uniform="settings-values")
-        else:
-            g.columnconfigure(1, weight=0)
-            g.columnconfigure(2, weight=1)
+        self._configure_grid_columns(g, two_columns)
         return g
+
+    @staticmethod
+    def _configure_grid_columns(grid: tk.Frame, two_columns: bool) -> None:
+        for column in range(4):
+            grid.columnconfigure(column, minsize=0, weight=0, uniform="")
+        if two_columns:
+            grid.columnconfigure(0, minsize=130)
+            grid.columnconfigure(1, weight=1, uniform="settings-values")
+            grid.columnconfigure(2, minsize=130)
+            grid.columnconfigure(3, weight=1, uniform="settings-values")
+        else:
+            grid.columnconfigure(0, minsize=130)
+            grid.columnconfigure(1, weight=1)
 
     @staticmethod
     def _cell(grid: tk.Frame, row: int) -> tuple[int, int]:
@@ -214,11 +228,45 @@ class SettingsPage(Page):
             return row // 2, (row % 2) * 2
         return row, 0
 
+    def _schedule_server_layout(self, _event=None) -> None:
+        if self._server_layout_id is not None:
+            self.after_cancel(self._server_layout_id)
+        self._server_layout_id = self.after(40, self._layout_server_grid)
+
+    def _layout_server_grid(self) -> None:
+        self._server_layout_id = None
+        grid = self._server_grid
+        width = grid.winfo_width()
+        if width <= 1:
+            return
+        compact = width < _SERVER_COMPACT_WIDTH
+        if compact == self._server_compact:
+            return
+        self._server_compact = compact
+        grid._two_columns = not compact
+        self._configure_grid_columns(grid, not compact)
+        for widget in grid.winfo_children():
+            logical_row = getattr(widget, "_settings_row", None)
+            if logical_row is None:
+                continue
+            row, column = self._cell(grid, logical_row)
+            if getattr(widget, "_settings_role", "") == "label":
+                widget.grid_configure(row=row, column=column,
+                                      padx=(0, 16))
+            else:
+                widget.grid_configure(
+                    row=row, column=column + 1,
+                    padx=(0, 22 if not compact and column == 0 else 0))
+        self.after_idle(self._layout_api_actions)
+
     def _label(self, grid: tk.Frame, row: int, text: str) -> None:
-        row, col = self._cell(grid, row)
-        tk.Label(grid, text=text, bg=self.c["surface"], fg=self.c["muted"],
-                 font=theme.ui(9), anchor="w").grid(
-            row=row, column=col, sticky="w", pady=5, padx=(0, 16))
+        logical_row = row
+        row, col = self._cell(grid, logical_row)
+        label = tk.Label(grid, text=text, bg=self.c["surface"],
+                         fg=self.c["muted"], font=theme.ui(9), anchor="w")
+        label._settings_row = logical_row
+        label._settings_role = "label"
+        label.grid(row=row, column=col, sticky="w", pady=5, padx=(0, 16))
 
     def _entry(self, grid: tk.Frame, row: int, label: str, value: str,
                secret: bool = False, wide: bool = False) -> ttk.Entry:
@@ -226,6 +274,8 @@ class SettingsPage(Page):
         grid_row, col = self._cell(grid, row)
         e = ttk.Entry(grid, width=60 if wide else _FIELD_W, font=theme.mono(9),
                       show="•" if secret and value else "")
+        e._settings_row = row
+        e._settings_role = "value"
         e.insert(0, value)
         e.grid(row=grid_row, column=col + 1, sticky="ew", pady=5,
                padx=(0, 22 if col == 0 else 0))
@@ -237,28 +287,59 @@ class SettingsPage(Page):
         self._label(grid, row, t("API key"))
         grid_row, col = self._cell(grid, row)
         wrap = tk.Frame(grid, bg=self.c["surface"])
+        wrap._settings_row = row
+        wrap._settings_role = "value"
         wrap.grid(row=grid_row, column=col + 1, sticky="ew", pady=5,
                   padx=(0, 22 if col == 0 else 0))
         entry = ttk.Entry(wrap, width=18, font=theme.mono(9))
-        entry.pack(side="left", fill="x", expand=True)
+        actions = tk.Frame(wrap, bg=self.c["surface"])
+        self._api_wrap = wrap
+        self._api_entry_widget = entry
+        self._api_actions = actions
+        self._api_actions_compact: bool | None = None
         self._api_show_btn = PillButton(
-            wrap, self.c, t("Show"), size=7, padx=7, height=24,
+            actions, self.c, t("Show"), size=7, padx=7, height=24,
             command=self._toggle_api_key)
         self._api_show_btn.pack(side="left", padx=(5, 0))
-        PillButton(wrap, self.c, t("Copy"), size=7, padx=7, height=24,
+        PillButton(actions, self.c, t("Copy"), size=7, padx=7, height=24,
                    command=self._copy_api_key).pack(side="left", padx=(4, 0))
-        PillButton(wrap, self.c, t("Generate"), size=7, padx=7, height=24,
+        PillButton(actions, self.c, t("Generate"), size=7, padx=7, height=24,
                    command=self._generate_api_key).pack(side="left", padx=(4, 0))
+        wrap.bind("<Configure>", self._schedule_api_layout, add="+")
+        self.after_idle(self._layout_api_actions)
         self._render_api_key(entry)
         return entry
+
+    def _schedule_api_layout(self, _event=None) -> None:
+        if self._api_layout_id is not None:
+            self.after_cancel(self._api_layout_id)
+        self._api_layout_id = self.after(40, self._layout_api_actions)
+
+    def _layout_api_actions(self) -> None:
+        self._api_layout_id = None
+        if not hasattr(self, "_api_wrap"):
+            return
+        compact = (bool(self._server_compact)
+                   or self._api_wrap.winfo_width() < _API_ACTIONS_COMPACT_WIDTH)
+        if compact == self._api_actions_compact:
+            return
+        self._api_actions_compact = compact
+        self._api_entry_widget.pack_forget()
+        self._api_actions.pack_forget()
+        if compact:
+            self._api_entry_widget.pack(fill="x")
+            self._api_actions.pack(anchor="w", pady=(5, 0))
+        else:
+            self._api_actions.pack(side="right")
+            self._api_entry_widget.pack(side="left", fill="x", expand=True)
 
     @staticmethod
     def _partial_key(value: str) -> str:
         if not value:
             return ""
         if len(value) <= 10:
-            return "â€¢" * len(value)
-        return value[:6] + "â€¢" * 8 + value[-4:]
+            return "\u2022" * len(value)
+        return value[:6] + "\u2022" * 8 + value[-4:]
 
     def _render_api_key(self, entry=None) -> None:
         entry = entry or self._api_key
@@ -307,6 +388,8 @@ class SettingsPage(Page):
         grid_row, col = self._cell(grid, row)
         cb = ttk.Combobox(grid, values=values, state="readonly",
                           width=_FIELD_W - 2, font=theme.ui(9))
+        cb._settings_row = row
+        cb._settings_role = "value"
         cb.set(current)
         cb.grid(row=grid_row, column=col + 1, sticky="ew", pady=5,
                 padx=(0, 22 if col == 0 else 0))
@@ -317,9 +400,11 @@ class SettingsPage(Page):
         self._label(grid, row, label)
         grid_row, col = self._cell(grid, row)
         var = tk.BooleanVar(value=value)
-        ttk.Checkbutton(grid, variable=var, style="TCheckbutton",
-                        takefocus=False).grid(row=grid_row, column=col + 1,
-                                               sticky="w")
+        check = ttk.Checkbutton(grid, variable=var, style="TCheckbutton",
+                                takefocus=False)
+        check._settings_row = row
+        check._settings_role = "value"
+        check.grid(row=grid_row, column=col + 1, sticky="w")
         return var
 
     # ── Expose mapping ───────────────────────────────────────────────────────

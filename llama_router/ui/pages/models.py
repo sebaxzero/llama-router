@@ -147,11 +147,10 @@ class ModelsPage(Page):
             tk.Label(chip, text=folder, bg=c["surface"], fg=c["muted"],
                      font=theme.mono(8), padx=8, pady=3).pack(side="left")
             if removable:
-                x = tk.Label(chip, text="×", bg=c["surface"], fg=c["faint"],
-                             font=theme.ui(9, "bold"), padx=4, cursor="hand2")
-                x.pack(side="left")
-                x.bind("<Button-1>",
-                       lambda e, f=folder: self._remove_folder(f))
+                PillButton(
+                    chip, c, "×", size=7, padx=5, height=22,
+                    command=lambda f=folder: self._remove_folder(f)).pack(
+                        side="left", padx=(0, 3))
 
         # Table
         self._tree.delete(*self._tree.get_children())
