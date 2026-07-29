@@ -23,22 +23,12 @@
 - **Watch the GPU**, VRAM and utilization while the server is up.
 - **Use the built-in playground**, chat with a running model, stream responses, attach files, copy code blocks, and retain local sessions.
 
-## Screenshots
+## Demo
 
-![Dashboard](llama_router/assets/screenshots/page_dashboard.png)
-**Dashboard:**  server controls, client endpoint, resource usage, logs, and setup status.
+[![Llama Router app demo](llama_router/assets/screenshots/app_demo.gif)](llama_router/assets/screenshots/app_demo.mp4)
 
-![Playground](llama_router/assets/screenshots/page_playground.png)
-**Playground:**  chat with your models: streaming, file attachments, code-block copy, and saved sessions.
-
-![Models & Profiles](llama_router/assets/screenshots/page_profiles.png)
-**Models & Profiles:**  discover `.gguf` files, configure routes, and inspect the generated `models-preset.ini`.
-
-![Runtime](llama_router/assets/screenshots/page_runtime.png)
-**Runtime:**  install, import, and switch between `llama.cpp` builds.
-
-![Settings (Forge)](llama_router/assets/screenshots/page_settings.png)
-**Settings:**  language, server exposure and authentication, startup preferences, and eight built-in themes.
+Start the server, connect a client, chat in the Playground, inspect models and
+runtimes, then switch themes. Click the demo for the higher-quality MP4.
 
 ## Quick start
 

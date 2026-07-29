@@ -357,7 +357,7 @@ class App:
         stray <Configure> between teardown and rebuild would touch destroyed
         widgets and raise TclError.
         """
-        if getattr(self, "_rebuilding", False):
+        if getattr(self, "_rebuilding", False) or self._closing:
             return
         if self._resize_id is not None:
             self.root.after_cancel(self._resize_id)
