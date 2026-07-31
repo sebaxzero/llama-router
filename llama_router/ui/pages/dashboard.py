@@ -77,7 +77,8 @@ class DashboardPage(Page):
         self._reason = tk.Label(self, text="", bg=c["bg"], fg=c["warn"],
                                 font=theme.ui(9), anchor="w", justify="left")
         self._logs_open = False
-        self._logs_dirty = False
+        self._logs_dirty = True
+        self._logs_initialized = False
         self._tick_id = None
 
         # ── Client connection ───────────────────────────────────────────────
@@ -96,6 +97,8 @@ class DashboardPage(Page):
         self._examples_open = False
 
         self._ep = ep
+        self._endpoint_signature_rendered = None
+        self._last_cmd_preview: str | None = None
 
         # ── Live resource strip ──────────────────────────────────────────────
         usage = Card(fixed_usage, c, border=c["panel_ok"])
@@ -125,6 +128,7 @@ class DashboardPage(Page):
         # ── First steps ──────────────────────────────────────────────────────
         self._steps_card_open = bool(
             ctx.collapsible_states.get("dashboard.first_steps", True))
+        self._steps_built = False
         steps = Card(body, c, border=c["panel_warn"])
         steps_head = tk.Frame(steps.body, bg=c["surface"])
         steps_head.pack(fill="x")
@@ -137,7 +141,7 @@ class DashboardPage(Page):
         self._steps_box = tk.Frame(steps.body, bg=c["surface"])
         if self._steps_card_open:
             self._steps_box.pack(fill="x", pady=(10, 0))
-        self._render_steps()
+            self._render_steps()
 
         self._logpanel = Card(body, c, border=c["panel_request"])
         logbar = tk.Frame(self._logpanel.body, bg=c["surface"])
@@ -154,7 +158,8 @@ class DashboardPage(Page):
             values=[t("All"), "server", "app", "downloads"])
         self._src.current(0)
         self._src.pack(side="left", padx=(12, 0))
-        self._src.bind("<<ComboboxSelected>>", lambda _e: self._reload_logs())
+        self._src.bind("<<ComboboxSelected>>",
+                       lambda _e: self._on_log_filter_changed())
         clear_logs = PillButton(logbar, c, t("Clear"), size=9, padx=12,
                                 height=26, command=self._clear_logs)
         clear_logs.pack(side="right")
@@ -195,8 +200,6 @@ class DashboardPage(Page):
         for source, token in _SOURCE_COLORS.items():
             self._log_text.tag_configure("source:" + source,
                                          foreground=c[token])
-        self._reload_logs()
-
         # Recompose the dashboard body in operational order.
         ep.pack_forget()
 
@@ -286,7 +289,8 @@ class DashboardPage(Page):
         self.ctx.collapsible_states["dashboard.logs"] = open_
         self._logs_toggle.set_text("▾" if open_ else "▸")
         if open_:
-            self._reload_logs()
+            if self._logs_dirty or not self._logs_initialized:
+                self._reload_logs()
             for child, options in self._log_actions:
                 child.pack(**options)
             self._src.pack(side="left", padx=(12, 0))
@@ -305,6 +309,8 @@ class DashboardPage(Page):
             self._steps_card_open
         self._steps_toggle.set_text("▾" if self._steps_card_open else "▸")
         if self._steps_card_open:
+            if not self._steps_built:
+                self._render_steps()
             self._steps_box.pack(fill="x", pady=(10, 0))
         else:
             self._steps_box.pack_forget()
@@ -336,6 +342,10 @@ class DashboardPage(Page):
         return "your-model-alias"
 
     def _render_endpoints(self) -> None:
+        signature = self._endpoint_signature()
+        if signature == self._endpoint_signature_rendered:
+            return
+        self._endpoint_signature_rendered = signature
         for widget in self._endpoint_rows.winfo_children():
             widget.destroy()
         base = self._base_url()
@@ -395,8 +405,31 @@ class DashboardPage(Page):
         if self._examples_open:
             self._render_client_examples()
 
+    def _endpoint_signature(self) -> tuple:
+        cfg = self._config()
+        server = self.ctx.services.get("server")
+        info = server.connection_info() if server else None
+        srv_cfg = cfg.server if cfg else None
+        visible = bool(cfg and cfg.show_api_details)
+        if info:
+            api_state = info["api_key_required"]
+        else:
+            api_state = bool(srv_cfg and srv_cfg.api_key)
+        if visible and srv_cfg:
+            api_state = (api_state, srv_cfg.api_key)
+        return (
+            info["host"] if info else None,
+            info["port"] if info else srv_cfg.port if srv_cfg else None,
+            srv_cfg.expose if srv_cfg else None,
+            visible,
+            api_state,
+            bool(info and info["pending_restart"]),
+            self._examples_open,
+        )
+
     def _toggle_client_examples(self) -> None:
         self._examples_open = not self._examples_open
+        self._endpoint_signature_rendered = None
         if self._examples_open:
             self._render_client_examples()
             self._client_examples_box.pack(fill="x", pady=(12, 0))
@@ -532,6 +565,7 @@ class DashboardPage(Page):
 
     def _render_steps(self) -> None:
         c = self.c
+        self._steps_built = True
         for w in self._steps_box.winfo_children():
             w.destroy()
         steps = [
@@ -742,12 +776,15 @@ class DashboardPage(Page):
                     display_cmd[index] = "--api-key=••••••••"
         preview = (self._format_cmd(display_cmd) if display_cmd
                    else t("No runtime selected"))
+        self._cmd_copy.set_enabled(bool(self._launch_cmd))
+        if preview == self._last_cmd_preview:
+            return
+        self._last_cmd_preview = preview
         self._cmd.configure(state="normal", height=max(1, preview.count("\n") + 1))
         self._cmd.delete("1.0", "end")
         self._cmd.insert("1.0", preview)
         self._highlight_code(self._cmd, preview)
         self._cmd.configure(state="disabled")
-        self._cmd_copy.set_enabled(bool(self._launch_cmd))
 
     @staticmethod
     def _format_cmd(cmd: list[str]) -> str:
@@ -773,6 +810,12 @@ class DashboardPage(Page):
         selected = self._src.get()
         return None if selected == t("All") else [selected]
 
+    def _on_log_filter_changed(self) -> None:
+        if self._logs_open:
+            self._reload_logs()
+        else:
+            self._logs_dirty = True
+
     def _reload_logs(self) -> None:
         self._log_text.configure(state="normal")
         self._log_text.delete("1.0", "end")
@@ -780,9 +823,11 @@ class DashboardPage(Page):
             self._append_log(entry)
         self._log_text.configure(state="disabled")
         self._log_text.see("end")
+        self._logs_initialized = True
+        self._logs_dirty = False
 
     def _on_log(self, entry: dict) -> None:
-        if not self._visible:
+        if not self._visible or not self._logs_open:
             self._logs_dirty = True
             return
         sources = self._log_sources()
@@ -808,7 +853,10 @@ class DashboardPage(Page):
 
     def _clear_logs(self) -> None:
         self.ctx.logs.clear()
-        self._reload_logs()
+        if self._logs_open:
+            self._reload_logs()
+        else:
+            self._logs_dirty = True
 
     def _scroll_logs(self, event_or_steps) -> str:
         """Scroll the log and prevent the dashboard's global wheel binding."""
@@ -848,9 +896,8 @@ class DashboardPage(Page):
         server = self.ctx.services.get("server")
         if server is not None:
             self._on_status(server.get_status_dict())
-        if self._logs_dirty and self._logs_open:
+        if self._logs_open and (self._logs_dirty or not self._logs_initialized):
             self._reload_logs()
-        self._logs_dirty = False
         if self._tick_id is None:
             self._tick()
 

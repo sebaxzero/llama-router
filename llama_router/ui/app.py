@@ -1131,6 +1131,11 @@ class App:
                 server.shutdown()
             except Exception:
                 pass
+        for page in self._pages.values():
+            try:
+                page.teardown()
+            except Exception:
+                pass
         self.root.destroy()
 
     def run(self) -> None:

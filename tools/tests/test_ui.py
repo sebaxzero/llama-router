@@ -5,6 +5,7 @@ import sys
 import tempfile
 import tkinter as tk
 import unittest
+from unittest import mock
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -303,6 +304,63 @@ class TestAppLayout(_TkTest):
                         app._on_close()
                 except tk.TclError:
                     pass
+                logs.close()
+
+    def test_dashboard_defers_closed_logs_until_open(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.object(LogService, "get", autospec=True,
+                                   side_effect=LogService.get) as get:
+                app, logs = self._build_app(Path(td))
+                try:
+                    page = app._pages["dashboard"]
+                    self.assertFalse(page._logs_open)
+                    self.assertEqual(get.call_count, 0)
+
+                    logs.log("app", "info", "before opening")
+                    app.ctx.events.drain()
+                    self.assertEqual(page._visible_logs(), "")
+
+                    page._set_logs_open(True)
+                    self.assertEqual(get.call_count, 1)
+                    self.assertIn("before opening", page._visible_logs())
+
+                    page._set_logs_open(False)
+                    previous = page._visible_logs()
+                    logs.log("app", "info", "while closed")
+                    app.ctx.events.drain()
+                    self.assertEqual(page._visible_logs(), previous)
+
+                    page._set_logs_open(True)
+                    self.assertEqual(get.call_count, 2)
+                    self.assertIn("while closed", page._visible_logs())
+                finally:
+                    if app.root.winfo_exists():
+                        app._on_close()
+                    logs.close()
+
+    def test_dashboard_skips_unchanged_endpoint_and_command_render(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            app, logs = self._build_app(Path(td))
+            try:
+                page = app._pages["dashboard"]
+                page._endpoint_signature_rendered = None
+                with mock.patch.object(page, "_base_url",
+                                        wraps=page._base_url) as base_url:
+                    page._render_endpoints()
+                    first_calls = base_url.call_count
+                    page._render_endpoints()
+                    self.assertEqual(base_url.call_count, first_calls)
+
+                page._last_cmd_preview = None
+                with mock.patch.object(page, "_highlight_code",
+                                        wraps=page._highlight_code) as highlight:
+                    page._refresh_cmd()
+                    first_calls = highlight.call_count
+                    page._refresh_cmd()
+                    self.assertEqual(highlight.call_count, first_calls)
+            finally:
+                if app.root.winfo_exists():
+                    app._on_close()
                 logs.close()
 
 
