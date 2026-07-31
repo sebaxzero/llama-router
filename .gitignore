@@ -13,8 +13,13 @@ models/
 # Config (generated or local secrets)
 config/
 
-# Local tests
-tools/
+# Developer tools (sources are versioned)
+tools/.venv/
+tools/**/__pycache__/
+tools/**/*.pyc
+tools/_capture/
+tools/_scratch/
+tools/_responsive/
 
 # OS
 .DS_Store
@@ -31,9 +36,6 @@ build/
 venv/
 .venv/
 _capture/
-
-# agents
-AGENTS.md
 
 # pi agent cache / installed extensions
 .pi/
