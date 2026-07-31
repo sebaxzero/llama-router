@@ -52,6 +52,7 @@ class AppContext:
     colors: dict[str, str]
     services: dict[str, Any]
     enable_tray: bool = True
+    initial_geometry: str | None = None
     collapsible_states: dict[str, bool] = field(default_factory=dict)
     # Wired by App.__init__ immediately after construction — never call these
     # before the App exists.
@@ -96,7 +97,10 @@ class App:
         self._resize_id: str | None = None
         self._prewarm_id: str | None = None
         self._prewarm_queue: list[str] = []
-        self._page_build_ms: dict[str, float] = {}
+        self._page_construct_ms: dict[str, float] = {}
+        self._page_on_show_ms: dict[str, float] = {}
+        self._page_first_idle_ms: dict[str, float] = {}
+        self._navigation_token = 0
         self._nav_hbar_visible = False
         self._rebuilding = False   # guards resize handlers during theme teardown
         self._closing = False
@@ -109,7 +113,7 @@ class App:
         saved_cards = state.get("collapsible_cards", {})
         ctx.collapsible_states = (saved_cards if isinstance(saved_cards, dict)
                                   else {})
-        self.root.geometry(_DEFAULT_GEOMETRY)  # always open at the reference size
+        self.root.geometry(ctx.initial_geometry or _DEFAULT_GEOMETRY)
 
         theme_name = self._current_theme_name()
         ctx.colors.update(theme.apply(self.root, theme_name))
@@ -790,9 +794,17 @@ class App:
         page = cls(self.content, self.ctx)
         self._pages[key] = page
         elapsed_ms = (time.perf_counter() - started) * 1000
-        self._page_build_ms[key] = elapsed_ms
-        log.info("Built %s page in %.1f ms", key, elapsed_ms)
+        self._page_construct_ms[key] = elapsed_ms
+        log.info("Built %s page: construct=%.1f ms", key, elapsed_ms)
         return page
+
+    def _record_first_idle(self, key: str, started: float,
+                           token: int) -> None:
+        if token != self._navigation_token or self._active != key:
+            return
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        self._page_first_idle_ms[key] = elapsed_ms
+        log.info("Page %s first idle: %.1f ms", key, elapsed_ms)
 
     def _schedule_prewarm(self, delay: int = 200) -> None:
         self._cancel_prewarm()
@@ -815,7 +827,8 @@ class App:
         if self._prewarm_queue:
             # Give Tk at least one short interaction window; expensive pages
             # earn proportionally more recovery time before the next build.
-            pause = max(40, min(200, round(self._page_build_ms.get(key, 40))))
+            pause = max(40, min(200,
+                                round(self._page_construct_ms.get(key, 40))))
             self._prewarm_id = self.root.after(pause, self._prewarm_next)
 
     def _cancel_prewarm(self) -> None:
@@ -960,6 +973,9 @@ class App:
             key = "dashboard"
         if self._active == key:
             return
+        navigation_started = time.perf_counter()
+        self._navigation_token += 1
+        navigation_token = self._navigation_token
         self._cancel_prewarm()
         if key not in self._pages:
             # Keep the current page painted while the first build completes.
@@ -978,8 +994,14 @@ class App:
         self._active = key
         page._visible = True
         self._set_monitoring_active(key == "dashboard")
+        on_show_started = time.perf_counter()
         if hasattr(page, "on_show"):
             page.on_show()
+        on_show_ms = (time.perf_counter() - on_show_started) * 1000
+        self._page_on_show_ms[key] = on_show_ms
+        log.info("Page %s on_show: %.1f ms", key, on_show_ms)
+        self._after_idle(self._record_first_idle, key, navigation_started,
+                         navigation_token)
         self._after_idle(self._scroll_to_nav, key)
         self._after_idle(self._focus_first_action, key)
         self._schedule_prewarm()

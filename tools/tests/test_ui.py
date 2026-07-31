@@ -49,7 +49,7 @@ class TestPrewarm(unittest.TestCase):
         app._prewarm_queue = []
         app._closing = False
         app._rebuilding = False
-        app._page_build_ms = {}
+        app._page_construct_ms = {}
 
         app._schedule_prewarm(321)
         self.assertEqual(
@@ -133,7 +133,7 @@ class TestWidgetContracts(_TkTest):
 
 class TestAppLayout(_TkTest):
     @staticmethod
-    def _build_app(base: Path) -> tuple[App, LogService]:
+    def _build_app(base: Path, geometry: str | None = None) -> tuple[App, LogService]:
         paths = PathManager(base)
         paths.ensure_dirs()
         init_db(paths.db_path)
@@ -159,7 +159,8 @@ class TestAppLayout(_TkTest):
         services["playground"] = PlaygroundService(
             config, server, profiles, events, paths)
         ctx = AppContext(paths=paths, events=events, logs=logs,
-                         colors={}, services=services, enable_tray=False)
+                         colors={}, services=services, enable_tray=False,
+                         initial_geometry=geometry)
         return App(ctx), logs
 
     def test_page_viewports_focus_and_theme_teardown(self) -> None:
