@@ -796,8 +796,10 @@ class App:
 
     def _schedule_prewarm(self, delay: int = 200) -> None:
         self._cancel_prewarm()
-        priority = ("profiles", "playground", "runtime", "settings",
-                    "dashboard")
+        # Build lightweight pages from whichever tab restored at startup.
+        # Profiles stays demand-loaded because building its large Tk form on
+        # the UI thread is what made Playground briefly unresponsive.
+        priority = ("dashboard", "playground", "runtime", "settings")
         self._prewarm_queue = [key for key in priority
                                if key not in self._pages]
         if self._prewarm_queue:

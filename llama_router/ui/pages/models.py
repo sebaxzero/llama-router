@@ -35,14 +35,20 @@ def _fit(size: int, vram_bytes: int) -> str:
 
 
 class ModelsPage(Page):
-    def __init__(self, parent: tk.Widget, ctx, embedded: bool = False) -> None:
+    def __init__(self, parent: tk.Widget, ctx, embedded: bool = False,
+                 actions_parent: tk.Widget | None = None) -> None:
         super().__init__(parent, ctx)
         c = self.c
+        body_bg = c["surface"] if embedded else c["bg"]
+        self.configure(bg=body_bg)
+        self._chip_bg = c["surface_hi"] if embedded else c["surface"]
+        pad = 0 if embedded else PAGE_PAD
         if embedded:
-            head = tk.Frame(self, bg=c["bg"])
-            head.pack(fill="x", padx=PAGE_PAD, pady=(0, 12))
-            actions = tk.Frame(head, bg=c["bg"])
-            actions.pack(side="right")
+            if actions_parent is None:
+                actions = tk.Frame(self, bg=body_bg)
+                actions.pack(fill="x", pady=(0, 10))
+            else:
+                actions = actions_parent
         else:
             page_head = self.header(t("library"), t("Models"),
                                     t("GGUF files found in your model folders"))
@@ -55,14 +61,14 @@ class ModelsPage(Page):
         self._scan_btn.pack(side="left")
 
         # ── Folder chips ─────────────────────────────────────────────────────
-        self._chips = tk.Frame(self, bg=c["bg"])
-        self._chips.pack(fill="x", padx=PAGE_PAD, pady=(0, 10))
+        self._chips = tk.Frame(self, bg=body_bg)
+        self._chips.pack(fill="x", padx=pad, pady=(0, 10))
 
         # ── Table panel ──────────────────────────────────────────────────────
         panel = tk.Frame(self, bg=c["surface"],
                          highlightbackground=c["panel_accent"],
                          highlightthickness=1)
-        panel.pack(fill="x", padx=PAGE_PAD, pady=(0, 10))
+        panel.pack(fill="x", padx=pad, pady=(0, 10))
 
         cols = ("on", "name", "quant", "params", "ctx", "size", "fit", "state")
         self._tree = ttk.Treeview(panel, columns=cols, show="headings",
@@ -102,8 +108,8 @@ class ModelsPage(Page):
                                font=theme.ui(10), justify="center")
 
         # ── Footer actions ───────────────────────────────────────────────────
-        foot = tk.Frame(self, bg=c["bg"])
-        foot.pack(fill="x", padx=PAGE_PAD, pady=(0, PAGE_PAD))
+        foot = tk.Frame(self, bg=body_bg)
+        foot.pack(fill="x", padx=pad, pady=(0, pad))
         PillButton(foot, c, t("Enable all"), kind="accent",
                    size=9, padx=12, height=28,
                    command=lambda: self._set_all(True)).pack(side="left")
@@ -114,7 +120,7 @@ class ModelsPage(Page):
                                       size=9, padx=12, height=28,
                                       command=self._remove)
         self._remove_btn.pack(side="left", padx=(6, 0))
-        self._status = tk.Label(foot, text="", bg=c["bg"], fg=c["muted"],
+        self._status = tk.Label(foot, text="", bg=body_bg, fg=c["muted"],
                                 font=theme.ui(9))
         self._status.pack(side="right")
 
@@ -140,11 +146,11 @@ class ModelsPage(Page):
         folders = [(str(self.ctx.paths.models_dir), False)]
         folders += [(f, True) for f in cfg.model_folders]
         for folder, removable in folders:
-            chip = tk.Frame(self._chips, bg=c["surface"],
+            chip = tk.Frame(self._chips, bg=self._chip_bg,
                             highlightbackground=c["border"],
                             highlightthickness=1)
             chip.pack(side="left", padx=(0, 6))
-            tk.Label(chip, text=folder, bg=c["surface"], fg=c["muted"],
+            tk.Label(chip, text=folder, bg=self._chip_bg, fg=c["muted"],
                      font=theme.mono(8), padx=8, pady=3).pack(side="left")
             if removable:
                 PillButton(

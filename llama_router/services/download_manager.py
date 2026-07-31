@@ -8,12 +8,13 @@ without blocking the UI.
 """
 from __future__ import annotations
 
-import json
 import logging
+import re
 import threading
 import time
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Callable
 
@@ -33,7 +34,8 @@ _RETRY_BASE = 2.0          # seconds; wait = RETRY_BASE ** attempt
 _STALL_WINDOW = 30.0       # seconds over which throughput is averaged
 _STALL_MIN_BPS = 50 * 1024   # below this average the connection is stalled
 
-GH_API = "https://api.github.com/repos/ggerganov/llama.cpp/releases"
+# The public feed is not tied to GitHub REST's shared anonymous API quota.
+GH_RELEASES = "https://github.com/ggml-org/llama.cpp/releases.atom"
 
 _UA = {"User-Agent": "llama-router"}
 
@@ -43,10 +45,10 @@ class _StallError(Exception):
     _STALL_WINDOW — typical of a degraded CDN connection that never drops."""
 
 
-def _http_json(url: str, headers: dict | None = None, timeout: float = 15):
+def _http_text(url: str, headers: dict | None = None, timeout: float = 15) -> str:
     req = urllib.request.Request(url, headers={**_UA, **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        return resp.read().decode("utf-8")
 
 
 class DownloadManager:
@@ -110,25 +112,32 @@ class DownloadManager:
 
     def gh_releases(self, limit: int = 10) -> list[dict]:
         try:
-            releases = _http_json(f"{GH_API}?per_page={limit}", timeout=15)
+            root = ET.fromstring(_http_text(GH_RELEASES, timeout=15))
+            atom = "{http://www.w3.org/2005/Atom}"
+            result = []
+            for entry in root.findall(f"{atom}entry")[:limit]:
+                content = entry.findtext(f"{atom}content") or ""
+                urls = dict.fromkeys(re.findall(
+                    r'href="(https://github\.com/ggml-org/llama\.cpp/'
+                    r'releases/download/[^"]+)',
+                    content))
+                assets = [
+                    # ponytail: Atom omits sizes; use HEAD requests if the UI
+                    # ever needs exact sizes before a download starts.
+                    {"name": url.rsplit("/", 1)[-1], "url": url, "size": 0}
+                    for url in urls
+                    if url.endswith((".zip", ".tar.gz", ".tgz"))
+                ]
+                if assets:
+                    result.append({
+                        "tag": entry.findtext(f"{atom}title") or "",
+                        "published": entry.findtext(f"{atom}updated") or "",
+                        "assets": assets,
+                    })
+            return result
         except Exception as e:
             log.warning("GitHub releases fetch failed: %s", e)
             return []
-        result = []
-        for rel in releases:
-            assets = [
-                {"name": a["name"], "url": a["browser_download_url"],
-                 "size": a["size"]}
-                for a in rel.get("assets", [])
-                if a["name"].endswith((".zip", ".tar.gz", ".tgz"))
-            ]
-            if assets:
-                result.append({
-                    "tag": rel["tag_name"],
-                    "published": rel["published_at"],
-                    "assets": assets,
-                })
-        return result
 
     # ── Internals ────────────────────────────────────────────────────────────
 

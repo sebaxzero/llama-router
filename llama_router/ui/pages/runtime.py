@@ -26,7 +26,7 @@ class RuntimePage(Page):
                                        command=self._fetch)
         self._refresh_btn.pack(side="left")
 
-        scroll = ScrollFrame(self, c, fill_height=True)
+        scroll = ScrollFrame(self, c)
         scroll.pack(fill="both", expand=True)
         content = scroll.body
 

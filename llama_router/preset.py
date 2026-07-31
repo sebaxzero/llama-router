@@ -95,11 +95,13 @@ def _is_true(v: Any) -> bool:
 
 def _write_legacy_load_mode(section_dict: dict, params: dict) -> None:
     if "load-mode" in params:
+        if params["load-mode"] == "mmap+mlock":
+            section_dict["load-mode"] = "mlock"
         return
     locked = _is_true(params.get("mlock"))
     no_mmap = _is_true(params.get("no-mmap"))
     if locked:
-        section_dict["load-mode"] = "mlock" if no_mmap else "mmap+mlock"
+        section_dict["load-mode"] = "mlock"
     elif no_mmap:
         section_dict["load-mode"] = "none"
 

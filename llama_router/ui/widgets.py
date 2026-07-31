@@ -165,25 +165,40 @@ class Card(tk.Frame):
         self.body = tk.Frame(self._canvas, bg=self._fill)
         self._win = self._canvas.create_window(pad, pad, window=self.body,
                                                anchor="nw")
-        self._rect: int | None = None
+        self._rect = rounded_rect(self._canvas, 1, 1, 3, 3, radius,
+                                  fill=self._fill, outline=self._border)
+        self._canvas.tag_lower(self._rect)
         self.body.bind("<Configure>", self._on_body)
         self._canvas.bind("<Configure>", self._on_canvas)
 
     def _on_body(self, _e=None) -> None:
         w = self.body.winfo_reqwidth() + 2 * self._pad
         h = self.body.winfo_reqheight() + 2 * self._pad
-        self._canvas.configure(width=w, height=h)
+        options = {}
+        if int(float(self._canvas.cget("height"))) != h:
+            options["height"] = h
+        # Once packed, the parent owns the card width. Re-requesting it every
+        # time heavy content is hidden creates a resize loop and visible flash.
+        if (self._canvas.winfo_width() <= 1
+                and int(float(self._canvas.cget("width"))) != w):
+            options["width"] = w
+        if options:
+            self._canvas.configure(**options)
 
     def _on_canvas(self, e) -> None:
-        self._canvas.itemconfigure(self._win, width=e.width - 2 * self._pad)
-        if self._rect is not None:
-            self._canvas.delete(self._rect)
-        r = self._radius
-        self._rect = rounded_rect(self._canvas, 1, 1,
-                                  e.width - 2, e.height - 2, r,
-                                  fill=self._fill,
-                                  outline=self._border)
-        self._canvas.tag_lower(self._rect)
+        self._canvas.itemconfigure(
+            self._win, width=max(1, e.width - 2 * self._pad))
+        x1, y1 = 1, 1
+        x2, y2 = max(3, e.width - 2), max(3, e.height - 2)
+        r = min(self._radius, (x2 - x1) // 2, (y2 - y1) // 2)
+        self._canvas.coords(
+            self._rect,
+            x1 + r, y1, x2 - r, y1,
+            x2, y1, x2, y1 + r,
+            x2, y2 - r, x2, y2,
+            x2 - r, y2, x1 + r, y2,
+            x1, y2, x1, y2 - r,
+            x1, y1 + r, x1, y1)
 
 
 class PillButton(tk.Canvas):
@@ -484,10 +499,17 @@ class ScrollFrame(tk.Frame):
         super().__init__(parent, bg=c["bg"])
         self._fill_height = fill_height
         self._canvas = tk.Canvas(self, bg=c["bg"], highlightthickness=0, bd=0)
-        self._vbar = AutoScrollbar(self, orient="vertical",
+        # Keep the gutter reserved even while the auto-scrollbar is hidden.
+        # Otherwise crossing the overflow threshold changes every card's
+        # width and produces a full second layout pass (the visible flash).
+        self._vbar_host = tk.Frame(self, bg=c["bg"])
+        self._vbar = AutoScrollbar(self._vbar_host, orient="vertical",
                                    command=self._canvas.yview)
+        self._vbar_host.configure(width=self._vbar.winfo_reqwidth())
+        self._vbar_host.pack(side="right", fill="y")
+        self._vbar_host.pack_propagate(False)
         self._canvas.configure(yscrollcommand=self._vbar.set)
-        self._vbar.pack(side="right", fill="y")
+        self._vbar.pack(fill="y")
         self._canvas.pack(side="left", fill="both", expand=True)
 
         self.body = tk.Frame(self._canvas, bg=c["bg"])
@@ -700,10 +722,17 @@ def enable_row_hover(tree: ttk.Treeview, c: dict) -> None:
 
 
 def section_label(parent: tk.Widget, c: dict, text: str,
-                  accent: str | None = None) -> tk.Label:
-    """Uppercase mono card heading."""
-    return tk.Label(parent, text=theme.track(text), bg=parent.cget("bg"),
-                    fg=accent or c["faint"], font=theme.mono(8, "bold"))
+                  accent: str | None = None) -> tk.Frame:
+    """Uppercase mono card heading with an optional accent marker."""
+    heading = tk.Frame(parent, bg=parent.cget("bg"))
+    if accent:
+        marker = tk.Frame(heading, bg=accent, width=4, height=16)
+        marker.pack(side="left", padx=(0, 8))
+        marker.pack_propagate(False)
+    tk.Label(heading, text=theme.track(text), bg=heading.cget("bg"),
+             fg=accent or c["faint"],
+             font=theme.mono(8, "bold")).pack(side="left")
+    return heading
 
 
 class CollapsibleCard(Card):
@@ -730,17 +759,13 @@ class CollapsibleCard(Card):
         self._on_toggle = on_toggle
         self.header = tk.Frame(self.body, bg=c["surface"])
         self.header.pack(fill="x")
-        if accent:
-            marker = tk.Frame(self.header, bg=accent, width=4, height=16)
-            marker.pack(side="left", padx=(0, 8))
-            marker.pack_propagate(False)
-        heading = section_label(self.header, c, title)
-        if accent:
-            heading.configure(fg=accent)
+        heading = section_label(self.header, c, title, accent)
         heading.pack(side="left")
         self._toggle = PillButton(self.header, c, "▾" if expanded else "▸", size=9,
                                   padx=7, height=26, command=self.toggle)
         self._toggle.pack(side="right")
+        self.actions = tk.Frame(self.header, bg=c["surface"])
+        self.actions.pack(side="right", padx=(0, 8))
         self.content = tk.Frame(self.body, bg=c["surface"])
         if expanded:
             self.content.pack(fill="both", expand=True, pady=(10, 0))
@@ -753,34 +778,33 @@ class CollapsibleCard(Card):
         return self._open
 
     def set_open(self, open_: bool) -> None:
+        if open_ == self._open:
+            return
         self._open = open_
         self._toggle.set_text("▾" if open_ else "▸")
         if open_:
+            # Lazy card contents must be complete before the frame is mapped;
+            # mapping an empty frame first produces a visible intermediate
+            # layout and a second resize pass.
+            if self._on_toggle is not None:
+                self._on_toggle(True)
             self.content.pack(fill="both", expand=True, pady=(10, 0))
         else:
             self.content.pack_forget()
+            if self._on_toggle is not None:
+                self._on_toggle(False)
+        # A fill-height ScrollFrame can keep its body at the old viewport
+        # height when only a child's requested height changes. Refresh the
+        # nearest owner once, after lazy content has reached its final size.
         self.after_idle(self._refresh_scroll_layout)
         if self._state_key and self._state_store is not None:
             self._state_store[self._state_key] = open_
-        if self._on_toggle is not None:
-            self._on_toggle(open_)
 
     def _refresh_scroll_layout(self) -> None:
-        """Propagate the card's new requested height to nested scrollers."""
-        self._on_body()
         owner = self.master
         while owner is not None:
             if isinstance(owner, ScrollFrame):
-                owner._on_body(None)
+                if owner._fill_height:
+                    owner._on_body(None)
+                break
             owner = getattr(owner, "master", None)
-
-
-def key_value(parent: tk.Widget, c: dict, key: str, value: str,
-              value_fg: str | None = None) -> tk.Frame:
-    """One spec row: muted label left, mono value right."""
-    row = tk.Frame(parent, bg=parent.cget("bg"))
-    tk.Label(row, text=key, bg=row.cget("bg"), fg=c["muted"],
-             font=theme.ui(9)).pack(side="left")
-    tk.Label(row, text=value, bg=row.cget("bg"), fg=value_fg or c["text"],
-             font=theme.mono(9)).pack(side="right")
-    return row

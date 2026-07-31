@@ -11,21 +11,23 @@ from llama_router.preset import parse_profile_params, strip_disabled_sections
 from llama_router.core.storage import write_text
 from llama_router.ui import theme
 from llama_router.ui.pages.base import PAGE_PAD, Page
-from llama_router.ui.widgets import PillButton, section_label
+from llama_router.ui.widgets import PillButton
 
 
 class PresetPage(Page):
-    def __init__(self, parent: tk.Widget, ctx, embedded: bool = False) -> None:
+    def __init__(self, parent: tk.Widget, ctx, embedded: bool = False,
+                 actions_parent: tk.Widget | None = None) -> None:
         super().__init__(parent, ctx)
         c = self.c
+        body_bg = c["surface"] if embedded else c["bg"]
+        self.configure(bg=body_bg)
+        pad = 0 if embedded else PAGE_PAD
         if embedded:
-            toolbar = tk.Frame(self, bg=c["bg"])
-            toolbar.pack(fill="x", padx=PAGE_PAD, pady=(0, 10))
-            section_label(toolbar, c, "models-preset.ini",
-                          c["panel_request"]).pack(
-                side="left")
-            actions = tk.Frame(toolbar, bg=c["bg"])
-            actions.pack(side="right")
+            if actions_parent is None:
+                actions = tk.Frame(self, bg=body_bg)
+                actions.pack(fill="x", pady=(0, 10))
+            else:
+                actions = actions_parent
         else:
             head = self.header(
                 t("source of truth"), "models-preset.ini",
@@ -38,23 +40,24 @@ class PresetPage(Page):
                                     kind="primary", command=self._save)
         self._save_btn.pack(side="left")
 
-        bar = tk.Frame(self, bg=c["bg"])
-        bar.pack(fill="x", padx=PAGE_PAD, pady=(0, 8))
+        bar = tk.Frame(self, bg=body_bg)
+        bar.pack(fill="x", padx=pad, pady=(0, 8))
         self._path_lbl = tk.Label(bar, text=str(ctx.paths.preset_ini),
-                                  bg=c["bg"], fg=c["faint"], font=theme.mono(8))
+                                  bg=body_bg, fg=c["faint"], font=theme.mono(8))
         self._path_lbl.pack(side="left")
-        self._state_lbl = tk.Label(bar, text="", bg=c["bg"], fg=c["warn"],
+        self._state_lbl = tk.Label(bar, text="", bg=body_bg, fg=c["warn"],
                                    font=theme.ui(9))
         self._state_lbl.pack(side="right")
 
         panel = tk.Frame(self, bg=c["surface"],
                          highlightbackground=c["panel_request"],
                          highlightthickness=1)
-        panel.pack(fill="both", expand=True, padx=PAGE_PAD, pady=(0, PAGE_PAD))
+        panel.pack(fill="both", expand=True, padx=pad, pady=(0, pad))
         self._text = tk.Text(panel, bg=c["inset"], fg=c["text"], bd=0,
                              padx=10, pady=8, font=theme.mono(9), wrap="none",
                              insertbackground=c["text"], undo=True,
-                             highlightthickness=0)
+                             highlightthickness=0,
+                             height=14 if embedded else 24)
         vbar = ttk.Scrollbar(panel, orient="vertical", command=self._text.yview)
         hbar = ttk.Scrollbar(panel, orient="horizontal",
                              command=self._text.xview)

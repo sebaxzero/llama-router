@@ -302,11 +302,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "Copied ✓": "Copiado ✓",
         "OpenAI-compatible API — works with any standard client.":
             "API compatible con OpenAI — funciona con cualquier cliente estándar.",
-        "Inventory": "Inventario",
         "System": "Sistema",
-        "Registered models": "Modelos registrados",
-        "Installed runtimes": "Runtimes instalados",
-        "Active runtime": "Runtime activo",
         "none": "ninguno",
         "First steps": "Primeros pasos",
         "Serving at {url}": "Sirviendo en {url}",

@@ -14,8 +14,8 @@ from llama_router.ui import theme
 from llama_router.ui.pages.base import PAGE_PAD, Page
 from llama_router.ui.pages.models import ModelsPage
 from llama_router.ui.pages.preset import PresetPage
-from llama_router.ui.widgets import (AutoScrollbar, CollapsibleCard, NavItem,
-                                     PillButton, ScrollFrame, Tooltip,
+from llama_router.ui.widgets import (AutoScrollbar, CollapsibleCard, PillButton,
+                                     ScrollFrame, Tooltip,
                                      section_label, enable_row_hover)
 
 _CACHE_TYPES = ["f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0",
@@ -123,7 +123,7 @@ _SECTIONS: list[tuple[str, list[tuple]]] = [
         ("n-cpu-moe", "MoE CPU experts", "int", None),
         ("cpu-moe", "All MoE experts on CPU", "bool", None),
         ("load-mode", "Load mode", "choice",
-         (["mmap", "none", "mlock", "mmap+mlock", "dio"], "mmap")),
+         (["mmap", "none", "mlock", "dio"], "mmap")),
         ("device", "Devices", "str", None),
         ("fit", "Auto-fit to VRAM", "choice", (["on", "off"], "on")),
         ("fit-target", "Fit target (MiB)", "int", None),
@@ -332,11 +332,13 @@ _LEGACY_LOAD_KEYS = {"mlock", "no-mmap"}
 def _migrate_load_mode(params: dict) -> dict:
     """Translate legacy loading toggles for display without mutating storage."""
     migrated = dict(params)
-    if "load-mode" not in migrated:
+    if migrated.get("load-mode") == "mmap+mlock":
+        migrated["load-mode"] = "mlock"
+    elif "load-mode" not in migrated:
         locked = str(migrated.get("mlock", "")).lower() == "true"
         no_mmap = str(migrated.get("no-mmap", "")).lower() == "true"
         if locked:
-            migrated["load-mode"] = "mlock" if no_mmap else "mmap+mlock"
+            migrated["load-mode"] = "mlock"
         elif no_mmap:
             migrated["load-mode"] = "none"
     for key in _LEGACY_LOAD_KEYS:
@@ -386,29 +388,44 @@ class ProfilesPage(Page):
         c = self.c
         self.header(t("model workspace"), t("Models & Profiles"),
                     t("Models, routes and generated preset in one place"))
-        workspace_nav = tk.Frame(self, bg=c["bg"])
-        workspace_nav.pack(fill="x", padx=PAGE_PAD, pady=(0, 12))
-        self._workspace_nav = {
-            "models": NavItem(workspace_nav, c, t("Models"),
-                              command=lambda: self._show_workspace("models")),
-            "profiles": NavItem(workspace_nav, c, t("Profiles"),
-                                command=lambda: self._show_workspace("profiles")),
-        }
-        self._workspace_nav["models"].pack(side="left", padx=(0, 4))
-        self._workspace_nav["profiles"].pack(side="left")
-        self._workspace_nav["profiles"].set_active(True)
-
-        self._cols = ScrollFrame(self, dict(c, bg=c["bg"]), fill_height=True)
+        self._cols = ScrollFrame(self, dict(c, bg=c["bg"]))
         self._cols.pack(fill="both", expand=True, padx=PAGE_PAD,
                         pady=(0, PAGE_PAD))
-        cols = self._cols.body
-        cols.columnconfigure(0, weight=0)
-        cols.columnconfigure(1, weight=3)
-        cols.columnconfigure(2, weight=2)
-        cols.rowconfigure(0, weight=1)
+        sections = self._cols.body
+        self._library_view: ModelsPage | None = None
+        self._models_card = CollapsibleCard(
+            sections, c, t("Models"), expanded=False,
+            state_key="models-library", accent=c["panel_accent"],
+            on_toggle=self._on_models_card_toggle)
+        self._models_card.pack(fill="x", pady=(0, 10))
+
+        self._profiles_card = CollapsibleCard(
+            sections, c, t("Profiles"), expanded=True,
+            state_key="profiles-workspace", accent=c["panel_request"])
+        self._profiles_card.pack(fill="x", pady=(0, 10))
+        profile_actions = self._profiles_card.actions
+        PillButton(profile_actions, c, t("New"), kind="primary", size=8,
+                   padx=10, height=26, command=self._new).pack(side="left")
+        PillButton(profile_actions, c, t("Delete"), size=8, padx=10,
+                   height=26, command=self._delete).pack(
+                       side="left", padx=(6, 0))
+
+        profile_cols = tk.Frame(self._profiles_card.content, bg=c["surface"])
+        profile_cols.pack(fill="x")
+        profile_cols.columnconfigure(0, weight=0)
+        profile_cols.columnconfigure(1, weight=1)
+        profile_cols.rowconfigure(0, weight=1)
+        self._profile_cols = profile_cols
+
+        self._preset_view: PresetPage | None = None
+        self._preset_card = CollapsibleCard(
+            sections, c, t("Preset"), expanded=False,
+            state_key="preset-editor", accent=c["panel_num"],
+            on_toggle=self._on_preset_card_toggle)
+        self._preset_card.pack(fill="x", pady=(0, 10))
 
         # ── Left: models → profiles tree ─────────────────────────────────────
-        self._profile_list = tk.Frame(cols, bg=c["bg"], width=210)
+        self._profile_list = tk.Frame(profile_cols, bg=c["surface"], width=210)
         left = self._profile_list
         left.grid(row=0, column=0, sticky="nw", padx=(0, 14))
 
@@ -437,14 +454,7 @@ class ProfilesPage(Page):
         self._tree.bind("<<TreeviewSelect>>", lambda e: self._on_select())
         enable_row_hover(self._tree, c)
 
-        lbtns = tk.Frame(left, bg=c["bg"])
-        lbtns.pack(fill="x", pady=(10, 0))
-        PillButton(lbtns, c, t("New"), kind="primary", size=9, padx=12, height=28,
-                   command=self._new).pack(side="left")
-        PillButton(lbtns, c, t("Delete"), size=9, padx=12, height=28,
-                   command=self._delete).pack(side="left", padx=(6, 0))
-
-        lbtns2 = tk.Frame(left, bg=c["bg"])
+        lbtns2 = tk.Frame(left, bg=c["surface"])
         lbtns2.pack(fill="x", pady=(6, 0))
         PillButton(lbtns2, c, t("Activate all"), kind="accent",
                    size=9, padx=12, height=28,
@@ -455,75 +465,51 @@ class ProfilesPage(Page):
                    ).pack(anchor="w", pady=(6, 0))
 
         # ── Right: editor ────────────────────────────────────────────────────
-        self._editor = tk.Frame(cols, bg=c["surface"],
+        self._editor = tk.Frame(profile_cols, bg=c["surface"],
                                 highlightbackground=c["panel_accent"],
                                 highlightthickness=1)
-        self._editor.grid(row=0, column=1, sticky="nsew", padx=(0, 12))
+        self._editor.grid(row=0, column=1, sticky="nsew")
         self._fields: dict[str, tuple] = {}  # key → (kind, widget-or-var, extra)
         self._autosave_id: str | None = None
         self._loading_profile = False
         self._build_editor()
 
         self._current: str | None = None
-        self._preset_host = tk.Frame(cols, bg=c["bg"])
-        self._preset_host.grid(row=0, column=2, sticky="nsew")
-        self._preset_view: PresetPage | None = PresetPage(
-            self._preset_host, self.ctx, embedded=True)
-        self._preset_view.pack(fill="both", expand=True)
-        self._bind_outer_scroll(self._preset_view._text)
-        self._library_view: ModelsPage | None = None
-        self._compact_profiles: bool | None = None
         self._shown_once = False
-        self._cols.bind("<Configure>", self._on_profiles_resize, add="+")
-        self.after_idle(self._on_profiles_resize)
+        for event in ("models_scanned", "model_updated", "model_removed"):
+            self.subscribe(event, self._on_models_changed)
         self.subscribe("preset_imported", self._on_preset_imported)
         self._refresh_tree()
+        # Preset is small and contributes actions to the card header. Build it
+        # now so the first expansion does not visibly recompose that header.
+        self._ensure_preset_view()
+        if self._models_card.is_open:
+            self._ensure_library_view()
 
-    def _on_profiles_resize(self, event=None) -> None:
-        """Stack the preset below the editor before either panel gets cramped."""
-        width = event.width if event is not None else self._cols.winfo_width()
-        if width <= 1:
-            return
-        compact = width < 1100
-        if compact == self._compact_profiles:
-            return
-        self._compact_profiles = compact
-        if compact:
-            self._profile_list.grid_configure(row=0, column=0, rowspan=2,
-                                              sticky="nsw", padx=(0, 14))
-            self._editor.grid_configure(row=0, column=1, columnspan=2,
-                                        sticky="nsew", padx=0)
-            self._preset_host.grid_configure(row=1, column=1, columnspan=2,
-                                              sticky="nsew", pady=(12, 0))
-            self._cols.body.rowconfigure(0, weight=0)
-            self._cols.body.rowconfigure(1, weight=0)
-        else:
-            self._profile_list.grid_configure(row=0, column=0, rowspan=1,
-                                              sticky="nw", padx=(0, 14))
-            self._editor.grid_configure(row=0, column=1, columnspan=1,
-                                        sticky="nsew", padx=(0, 12))
-            self._preset_host.grid_configure(row=0, column=2, columnspan=1,
-                                              sticky="nsew", pady=0)
-            self._cols.body.rowconfigure(0, weight=1)
-            self._cols.body.rowconfigure(1, weight=0, minsize=0)
+    def _on_models_card_toggle(self, open_: bool) -> None:
+        if open_:
+            self._ensure_library_view()
 
-    def _show_workspace(self, name: str) -> None:
-        showing_profiles = self._cols.winfo_ismapped()
-        if name == "models" and showing_profiles:
-            self._flush_autosave()
-            self._cols.pack_forget()
-            if self._library_view is None:
-                self._library_view = ModelsPage(self, self.ctx, embedded=True)
-            self._library_view.pack(fill="both", expand=True)
-        elif name == "profiles" and not showing_profiles:
-            if self._library_view is not None:
-                self._library_view.pack_forget()
-            self._cols.pack(fill="both", expand=True, padx=PAGE_PAD,
-                            pady=(0, PAGE_PAD))
-            self._refresh_tree(keep=(f"p:{self._current}"
-                                     if self._current else None))
-        for key, item in self._workspace_nav.items():
-            item.set_active(key == name)
+    def _ensure_library_view(self) -> None:
+        if self._library_view is not None:
+            return
+        self._library_view = ModelsPage(
+            self._models_card.content, self.ctx, embedded=True,
+            actions_parent=self._models_card.actions)
+        self._library_view.pack(fill="x")
+
+    def _on_preset_card_toggle(self, open_: bool) -> None:
+        if open_:
+            self._ensure_preset_view()
+
+    def _ensure_preset_view(self) -> None:
+        if self._preset_view is not None:
+            return
+        self._preset_view = PresetPage(
+            self._preset_card.content, self.ctx, embedded=True,
+            actions_parent=self._preset_card.actions)
+        self._preset_view.pack(fill="x")
+        self._bind_outer_scroll(self._preset_view._text)
 
     # ── Services ─────────────────────────────────────────────────────────────
 
@@ -540,8 +526,7 @@ class ProfilesPage(Page):
     def _build_editor(self) -> None:
         c = self.c
         # The workspace's outer ScrollFrame owns vertical movement. Keeping
-        # the editor as a plain frame avoids adjacent nested scrollbars when
-        # the preset stacks below it in compact mode.
+        # the editor as a plain frame avoids a nested scrollbar in the form.
         self._editor_body = tk.Frame(self._editor, bg=c["surface"])
         self._editor_body.pack(fill="both", expand=True, padx=18, pady=16)
         outer = self._editor_body
@@ -605,6 +590,9 @@ class ProfilesPage(Page):
         self._quick_panels: list[tk.Frame] = []
         self._advanced_groups: dict[str, tk.Frame] = {}
         self._advanced_visible = False
+        self._advanced_built = False
+        self._extra: tk.Text | None = None
+        self._param_cache: dict = {}
         for group_title, keys in _QUICK_GROUPS:
             card = CollapsibleCard(
                 outer, c, t(group_title), expanded=True, pad=12,
@@ -687,6 +675,26 @@ class ProfilesPage(Page):
         toggle.bind("<Key-space>", self._activate_params_toggle)
         toggle.bind("<Key-Return>", self._activate_params_toggle)
 
+        self._default_fields = default_fields
+        self._default_sliders = default_sliders
+        self._advanced_fields: dict[str, tuple] = {}
+        self._advanced_sliders: dict[str, tuple] = {}
+        self._fields = self._default_fields
+        self._sliders = self._default_sliders
+        self._autosave_widgets: set[int] = set()
+        self._wire_autosave(self._default_fields.values(), identity=True)
+
+        self._editor_hint = tk.Label(self._editor, text="", bg=c["surface"],
+                                     fg=c["muted"], font=theme.ui(10))
+
+    def _build_advanced_editor(self) -> None:
+        """Create the large full form only when Advanced is first opened."""
+        if self._advanced_built:
+            return
+        c = self.c
+        previous_fields, previous_sliders = self._fields, self._sliders
+        self._fields, self._sliders = {}, {}
+
         for title, fields in _SECTIONS:
             group_title = next(group for group, sections in
                                _ADVANCED_GROUPS.items() if title in sections)
@@ -764,23 +772,25 @@ class ProfilesPage(Page):
                     self._label(cell, 0, 0, t(label))
                     self._make_field(cell, 0, 1, key, kind, extra)
 
-        row2 = tk.Frame(body, bg=c["surface"])
+        extra_group = self._advanced_groups["Runtime"]
+        row2 = tk.Frame(extra_group, bg=c["surface"])
         row2.pack(fill="x", pady=(10, 4))
         tk.Label(row2, text=t("Additional parameters (key = value per line)"),
-                 bg=c["surface"], fg=c["muted"], font=theme.ui(9)).pack(side="left")
+                 bg=c["surface"], fg=c["muted"],
+                 font=theme.ui(9)).pack(side="left")
         tk.Label(row2, text=t("same flags as llama-server"),
-                 bg=c["surface"], fg=c["faint"], font=theme.ui(8)).pack(side="right")
-        self._extra = self._text(body, 6)
+                 bg=c["surface"], fg=c["faint"],
+                 font=theme.ui(8)).pack(side="right")
+        self._extra = self._text(extra_group, 6)
         self._advanced_fields = dict(self._fields)
-        self._default_fields = {**self._advanced_fields, **default_fields}
+        self._advanced_fields["load-on-startup"] = \
+            self._default_fields["load-on-startup"]
         self._advanced_sliders = dict(self._sliders)
-        self._default_sliders = default_sliders
-        self._fields = self._default_fields
-        self._sliders = self._default_sliders
-        self._wire_autosave()
-
-        self._editor_hint = tk.Label(self._editor, text="", bg=c["surface"],
-                                     fg=c["muted"], font=theme.ui(10))
+        self._fields, self._sliders = previous_fields, previous_sliders
+        self._wire_autosave(self._advanced_fields.values())
+        self._extra.bind("<KeyRelease>",
+                         lambda _e: self._schedule_save(), add="+")
+        self._advanced_built = True
 
     def _reset_params(self, keys: set[str] | None = None) -> None:
         profile = self._profiles.get(self._current) if self._current else None
@@ -817,6 +827,8 @@ class ProfilesPage(Page):
 
     def _toggle_params(self) -> None:
         params = self._collect_params()
+        if not self._advanced_visible:
+            self._build_advanced_editor()
         self._advanced_visible = not self._advanced_visible
         if not self._advanced_visible:
             for group in self._advanced_groups.values():
@@ -1113,6 +1125,10 @@ class ProfilesPage(Page):
         else:
             self._show_hint(t("Pick a profile to edit — or create one with New."))
 
+    def _on_models_changed(self, _data=None) -> None:
+        keep = f"p:{self._current}" if self._current else None
+        self._refresh_tree(keep=keep)
+
     def _on_preset_imported(self, _data=None) -> None:
         """Reflect hand-edited INI values in the currently visible form."""
         if self._current:
@@ -1141,6 +1157,7 @@ class ProfilesPage(Page):
 
     def _fill_params(self, params: dict) -> None:
         params = _migrate_load_mode(params)
+        self._param_cache = dict(params)
         for key, (kind, w, extra) in self._fields.items():
             raw = params.get(key)
             if kind == "bool":
@@ -1158,8 +1175,9 @@ class ProfilesPage(Page):
                 slider = self._sliders.get(key)
                 if slider:
                     slider[2]()
-        self._extra.delete("1.0", "end")
-        self._extra.insert("1.0", _format_extra(params))
+        if self._extra is not None:
+            self._extra.delete("1.0", "end")
+            self._extra.insert("1.0", _format_extra(params))
 
     def _refresh_pickers(self, p) -> None:
         # Sampling presets: mark the ones matching the model name as suggested.
@@ -1209,7 +1227,16 @@ class ProfilesPage(Page):
         entry.insert(0, value)
 
     def _collect_params(self) -> dict:
-        params = _parse_extra(self._extra.get("1.0", "end"))
+        # Preserve fields whose advanced controls have not been constructed
+        # (or are currently hidden), then replace every visible field below.
+        params = dict(self._param_cache)
+        for key in self._fields:
+            params.pop(key, None)
+        if self._extra is not None:
+            for key in list(params):
+                if key not in _STRUCTURED or key in _LEGACY_LOAD_KEYS:
+                    params.pop(key, None)
+            params.update(_parse_extra(self._extra.get("1.0", "end")))
         for key, (kind, w, extra) in self._fields.items():
             if kind == "bool":
                 if w.get():
@@ -1243,15 +1270,12 @@ class ProfilesPage(Page):
                     params[key] = val
         return params
 
-    def _wire_autosave(self) -> None:
-        entries = [self._name, self._alias]
-        field_values = [*self._default_fields.values(),
-                        *self._advanced_fields.values()]
-        seen: set[int] = set()
+    def _wire_autosave(self, field_values, identity: bool = False) -> None:
+        entries = [self._name, self._alias] if identity else []
         for kind, widget, _extra in field_values:
-            if id(widget) in seen:
+            if id(widget) in self._autosave_widgets:
                 continue
-            seen.add(id(widget))
+            self._autosave_widgets.add(id(widget))
             if kind == "bool":
                 widget.trace_add("write", lambda *_: self._schedule_save())
             else:
@@ -1259,12 +1283,11 @@ class ProfilesPage(Page):
                 if kind in ("choice", "combo"):
                     widget.bind("<<ComboboxSelected>>",
                                 lambda _e: self._schedule_save(), add="+")
-        self._active.trace_add("write", lambda *_: self._schedule_save())
+        if identity:
+            self._active.trace_add("write", lambda *_: self._schedule_save())
         for entry in entries:
             entry.bind("<KeyRelease>", lambda _e: self._schedule_save(), add="+")
             entry.bind("<FocusOut>", lambda _e: self._schedule_save(0), add="+")
-        self._extra.bind("<KeyRelease>",
-                         lambda _e: self._schedule_save(), add="+")
 
     def _schedule_save(self, delay: int = 650) -> None:
         if self._loading_profile or not self._current:
@@ -1365,10 +1388,13 @@ class ProfilesPage(Page):
         self._refresh_tree(keep=sel[0] if sel else None)
 
     def on_show(self) -> None:
-        self.update_idletasks()
-        self._on_profiles_resize()
         if not self._shown_once:
             self._cols.scroll_to_start()
             self._shown_once = True
-        sel = self._tree.selection()
-        self._refresh_tree(keep=sel[0] if sel else None)
+        else:
+            if self._library_view is not None:
+                self._library_view.on_show()
+            if self._preset_view is not None:
+                self._preset_view.on_show()
+            sel = self._tree.selection()
+            self._refresh_tree(keep=sel[0] if sel else None)

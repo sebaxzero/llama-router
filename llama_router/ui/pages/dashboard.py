@@ -1,12 +1,10 @@
 """Dashboard — server state hero, endpoint card, getting-started checklist.
 
-Reads config defaults and reacts to `server_status` events; live counts wire
-in as each service lands.
+Reads config defaults and reacts to `server_status` events.
 
 The whole page is wrapped in a ScrollFrame so every card stays reachable no
 matter how short the window is (without it, the lower cards get clipped with
-no way to scroll to them). The endpoint + inventory row also restacks
-vertically on narrow windows.
+no way to scroll to them).
 """
 from __future__ import annotations
 
@@ -19,9 +17,9 @@ from tkinter import filedialog, messagebox, ttk
 from llama_router.i18n import t
 from llama_router.ui import theme
 from llama_router.ui.pages.base import PAGE_PAD, Page
-from llama_router.ui.widgets import (Card, CollapsibleCard, PillButton, ScrollFrame, StatusDot,
-                                    fmt_uptime, key_value, section_label,
-                                    status_label)
+from llama_router.ui.widgets import (Card, CollapsibleCard, PillButton,
+                                    ScrollFrame, StatusDot, fmt_uptime,
+                                    section_label, status_label)
 
 _LEVEL_COLORS = {"error": "error", "warning": "warn", "info": "muted",
                  "request": "request", "debug": "faint"}
@@ -72,82 +70,18 @@ class DashboardPage(Page):
 
         # Scroll container: keeps the entire dashboard reachable on short
         # windows instead of clipping the lower cards.
-        self._scroll = ScrollFrame(self, c, fill_height=True)
+        self._scroll = ScrollFrame(self, c)
         self._scroll.pack(fill="both", expand=True)
         body = self._scroll.body
 
-        # ── Hero: server state ───────────────────────────────────────────────
-        hero = Card(body, c, pad=22, border=c["panel_accent"])
-        hero.pack(fill="x", padx=PAGE_PAD)
-        top = tk.Frame(hero.body, bg=c["surface"])
-        top.pack(fill="x")
-
-        self._dot = StatusDot(top, c, size=18)
-        self._dot.configure(bg=c["surface"])
-        self._dot.pack(side="left", pady=2)
-        self._status_lbl = tk.Label(top, text=theme.track(t("Stopped")),
-                                    bg=c["surface"], fg=c["text"],
-                                    font=theme.mono(13, "bold"))
-        self._status_lbl.pack(side="left", padx=(10, 0))
-        self._uptime_lbl = tk.Label(top, text="", bg=c["surface"],
-                                    fg=c["muted"], font=theme.mono(9))
-        self._uptime_lbl.pack(side="left", padx=(10, 0), pady=(3, 0))
-
-        self._hint = tk.Label(hero.body,
-                              text=t("Install a runtime and add models before starting."),
-                              bg=c["surface"], fg=c["muted"], font=theme.ui(9))
-        self._hint.pack(anchor="center", pady=(12, 8))
-        controls = tk.Frame(hero.body, bg=c["surface"])
-        controls.pack(anchor="center", pady=(2, 0))
-        self._start_btn = PillButton(controls, c, t("Start server"),
-                                     kind="primary", size=10, padx=26,
-                                     height=36, command=self._start)
-        self._start_btn.pack(side="left")
-        self._restart_btn = PillButton(controls, c, t("Restart"), size=10,
-                                       padx=20, height=36,
-                                       command=self._restart)
-        self._restart_btn.pack(side="left", padx=(8, 0))
-        self._reason = tk.Label(hero.body, text="", bg=c["surface"],
-                                fg=c["warn"], font=theme.ui(9), anchor="w",
-                                justify="left")
-        cmd_head = tk.Frame(hero.body, bg=c["surface"])
-        cmd_head.pack(fill="x", pady=(12, 4))
-        tk.Label(cmd_head, text=t("Launch command").upper(), bg=c["surface"],
-                 fg=c["panel_accent"], font=theme.mono(8, "bold")).pack(side="left")
-        self._launch_cmd: list[str] = []
-        cmd_box = tk.Frame(hero.body, bg=c["inset"])
-        cmd_box.pack(fill="x")
-        self._cmd_copy = PillButton(cmd_box, c, t("Copy"), size=8, padx=9,
-                                    height=24, command=self._copy_launch_cmd)
-        self._cmd_copy.pack(side="right", padx=4, pady=4, anchor="n")
-        self._cmd_copy.set_enabled(False)
-        self._cmd = tk.Text(cmd_box, height=1, bg=c["inset"], fg=c["muted"],
-                            bd=0, padx=10, pady=6, font=theme.mono(8),
-                            wrap="word", state="disabled", takefocus=False,
-                            highlightthickness=0)
-        self._cmd.pack(side="left", fill="x", expand=True)
-
-        details = tk.Frame(body, bg=c["bg"])
-        details.pack(fill="x", padx=PAGE_PAD, pady=(10, 0))
-        self._inventory_btn = PillButton(details, c, t("Inventory"), size=8,
-                                         padx=11, height=26,
-                                         command=self._toggle_inventory)
-        self._inventory_btn.pack(side="left")
-        self._steps_btn = PillButton(details, c, t("First steps"), size=8,
-                                     padx=11, height=26,
-                                     command=self._toggle_steps)
-        self._steps_btn.pack(side="left", padx=(6, 0))
-        self._logs_btn = PillButton(details, c, t("Logs"), size=8,
-                                    padx=11, height=26,
-                                    command=self._toggle_logs)
-        self._logs_btn.pack(side="left", padx=(6, 0))
-        self._inventory_open = self._steps_open = self._logs_open = False
+        self._reason = tk.Label(self, text="", bg=c["bg"], fg=c["warn"],
+                                font=theme.ui(9), anchor="w", justify="left")
+        self._logs_open = False
         self._logs_dirty = False
         self._tick_id = None
 
         # ── Client connection ───────────────────────────────────────────────
-        # This card stays full-width.  Examples can be long, so sharing its
-        # row with the optional inventory would make both cards cramped.
+        # This card stays full-width. Examples can be long.
         ep = CollapsibleCard(body, c, t("Connect your client"),
                              state_key="dashboard.client",
                              accent=c["panel_request"])
@@ -160,7 +94,6 @@ class DashboardPage(Page):
         self._endpoint_rows.pack(fill="x")
         self._client_examples_box = tk.Frame(ep.content, bg=c["surface"])
         self._examples_open = False
-        self._render_endpoints()
 
         self._ep = ep
 
@@ -189,15 +122,10 @@ class DashboardPage(Page):
         self._usage_row.bind("<Configure>", self._relayout_usage, add="+")
         self.after_idle(lambda: self._relayout_usage())
 
-        # ── Optional guidance: first steps + inventory ───────────────────────
-        self._guidance_row = tk.Frame(body, bg=c["bg"])
-        self._guidance_row.columnconfigure(0, weight=1, uniform="guidance")
-        self._guidance_row.columnconfigure(1, weight=1, uniform="guidance")
-
+        # ── First steps ──────────────────────────────────────────────────────
         self._steps_card_open = bool(
             ctx.collapsible_states.get("dashboard.first_steps", True))
-        steps = Card(self._guidance_row, c, border=c["panel_warn"])
-        self._steps_card_w = steps
+        steps = Card(body, c, border=c["panel_warn"])
         steps_head = tk.Frame(steps.body, bg=c["surface"])
         steps_head.pack(fill="x")
         section_label(steps_head, c, t("First steps"), c["panel_warn"]).pack(
@@ -210,14 +138,6 @@ class DashboardPage(Page):
         if self._steps_card_open:
             self._steps_box.pack(fill="x", pady=(10, 0))
         self._render_steps()
-
-        summary = Card(self._guidance_row, c, border=c["panel_num"])
-        tk.Label(summary.body, text=t("Inventory").upper(), bg=c["surface"],
-                 fg=c["panel_num"], font=theme.mono(8, "bold")).pack(anchor="w")
-        self._kv_rows = tk.Frame(summary.body, bg=c["surface"])
-        self._kv_rows.pack(fill="x", pady=(8, 0))
-        self._summary = summary
-        self._refresh_summary()
 
         self._logpanel = Card(body, c, border=c["panel_request"])
         logbar = tk.Frame(self._logpanel.body, bg=c["surface"])
@@ -277,11 +197,7 @@ class DashboardPage(Page):
                                          foreground=c[token])
         self._reload_logs()
 
-        # Recompose the dashboard body in operational order.  The original
-        # hero is retained only while constructing its widgets above; all live
-        # controls are moved into the fixed page header below.
-        hero.pack_forget()
-        details.pack_forget()
+        # Recompose the dashboard body in operational order.
         ep.pack_forget()
 
         fixed = tk.Frame(head.actions, bg=c["bg"])
@@ -303,12 +219,6 @@ class DashboardPage(Page):
         self._restart_btn = PillButton(fixed, c, t("Restart"), size=9,
                                        padx=14, height=30, command=self._restart)
         self._restart_btn.pack(side="left", padx=(6, 0))
-        self._inventory_line = tk.Label(
-            head.actions, text="", bg=c["bg"], fg=c["faint"],
-            font=theme.mono(8), anchor="e")
-        self._inventory_line.pack(anchor="e", pady=(3, 0))
-        self._refresh_summary()
-
         # Resource use is fixed above; Logs itself owns its disclosure control.
         self._logpanel.pack(fill="x", padx=PAGE_PAD, pady=(14, 0))
         self._set_logs_open(bool(
@@ -334,64 +244,22 @@ class DashboardPage(Page):
                             highlightthickness=0)
         self._cmd.pack(side="left", fill="x", expand=True)
 
-        # Inventory and First steps are always visible at the end of the
-        # scrollable content, no longer controlled by separate disclosure
-        # buttons.
-        self._inventory_open = False
-        self._steps_open = True
-        self._guidance_row.pack(fill="x", padx=PAGE_PAD, pady=(14, PAGE_PAD))
-
-        # Responsive row layout: side-by-side when wide, stacked when narrow.
-        self._relayout_dash(self.winfo_width())
-        self._scroll.bind("<Configure>",
-                          lambda e: self._relayout_dash(e.width))
+        # First steps stays at the end of the scrollable content.
+        steps.pack(fill="x", padx=PAGE_PAD, pady=(14, PAGE_PAD))
+        self._align_fixed_usage()
 
         self.subscribe("server_status", self.when_visible(self._on_status))
         self.subscribe("server_health",
                        self.when_visible(lambda d: self._tick_uptime()))
-        self.subscribe("models_scanned",
-                       self.when_visible(lambda d: self._refresh_summary()))
-        self.subscribe("runtime_added",
-                       self.when_visible(lambda d: self._refresh_summary()))
-        self.subscribe("runtime_deleted",
-                       self.when_visible(lambda d: self._refresh_summary()))
-        self.subscribe("runtime_activated",
-                       self.when_visible(lambda d: self._refresh_summary()))
         self.subscribe("gpu_stats", self.when_visible(self._on_gpu))
         self.subscribe("system_stats", self.when_visible(self._on_system))
         self.subscribe("log_line", self._on_log)
-        self._refresh_cmd()
-        server = self.ctx.services.get("server")
-        if server is not None:
-            self._on_status(server.get_status_dict())
 
     # ── Responsive ───────────────────────────────────────────────────────────
 
-    def _relayout_dash(self, w: int) -> None:
-        self._align_fixed_usage()
-        if not getattr(self, "_guidance_row", None):
-            return
-        self._summary.grid_forget()
-        self._steps_card_w.grid_forget()
-        if not (self._inventory_open or self._steps_open):
-            self._guidance_row.pack_forget()
-        elif not self._guidance_row.winfo_ismapped():
-            self._guidance_row.pack(fill="x", padx=PAGE_PAD, pady=(14, PAGE_PAD))
-        if self._inventory_open and self._steps_open and w >= 720:
-            self._summary.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
-            self._steps_card_w.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
-        elif self._inventory_open and self._steps_open:
-            self._summary.grid(row=0, column=0, columnspan=2, sticky="ew",
-                               pady=(0, 12))
-            self._steps_card_w.grid(row=1, column=0, columnspan=2, sticky="ew")
-        elif self._inventory_open:
-            self._summary.grid(row=0, column=0, columnspan=2, sticky="ew")
-        else:
-            self._steps_card_w.grid(row=0, column=0, columnspan=2, sticky="ew")
-
     def _align_fixed_usage(self) -> None:
-        """Match the scroll body's right edge with or without its scrollbar."""
-        gutter = 12 if self._scroll._vbar.winfo_ismapped() else 0
+        """Match the scroll body's permanently reserved scrollbar gutter."""
+        gutter = self._scroll._vbar_host.winfo_reqwidth()
         self._fixed_usage.pack_configure(padx=(PAGE_PAD, PAGE_PAD + gutter))
 
     def _relayout_usage(self, event=None) -> None:
@@ -409,18 +277,6 @@ class DashboardPage(Page):
                                           padx=(0, 16), pady=0)
             self._gpu_card.grid_configure(row=0, column=1, columnspan=1,
                                           padx=0, pady=0)
-
-    def _toggle_inventory(self) -> None:
-        self._inventory_open = not self._inventory_open
-        self._inventory_btn.set_text(
-            ("▴ " if self._inventory_open else "▾ ") + t("Inventory"))
-        self._relayout_dash(self._scroll.winfo_width())
-
-    def _toggle_steps(self) -> None:
-        self._steps_open = not self._steps_open
-        self._steps_btn.set_text(
-            ("▴ " if self._steps_open else "▾ ") + t("First steps"))
-        self._relayout_dash(self._scroll.winfo_width())
 
     def _toggle_logs(self) -> None:
         self._set_logs_open(not self._logs_open)
@@ -442,7 +298,6 @@ class DashboardPage(Page):
             self._src.pack_forget()
             self._logscroll.pack_forget()
             self._log_text.pack_forget()
-        self._refresh_dashboard_scroll()
 
     def _toggle_steps_card(self) -> None:
         self._steps_card_open = not self._steps_card_open
@@ -453,11 +308,6 @@ class DashboardPage(Page):
             self._steps_box.pack(fill="x", pady=(10, 0))
         else:
             self._steps_box.pack_forget()
-        self._refresh_dashboard_scroll()
-
-    def _refresh_dashboard_scroll(self) -> None:
-        """Refresh a fill-height ScrollFrame after a child is collapsed."""
-        self.after_idle(lambda: self._scroll._on_body(None))
 
     # ── Data ─────────────────────────────────────────────────────────────────
 
@@ -554,7 +404,6 @@ class DashboardPage(Page):
         else:
             self._client_examples_box.pack_forget()
             self._examples_btn.set_text(t("Examples"))
-        self._refresh_dashboard_scroll()
 
     def _render_client_examples(self) -> None:
         for widget in self._client_examples_box.winfo_children():
@@ -681,34 +530,6 @@ class DashboardPage(Page):
         svc = self.ctx.services.get("config")
         return svc.get() if svc else None
 
-    def _counts(self) -> tuple[str, str, str]:
-        models = self.ctx.services.get("models")
-        runtimes = self.ctx.services.get("runtimes")
-        n_models = str(len(models.list())) if models else "—"
-        if runtimes:
-            active = runtimes.get_active()
-            rt = active.version if active else t("none")
-            n_rt = str(len(runtimes.list()))
-        else:
-            rt, n_rt = t("none"), "—"
-        return n_models, n_rt, rt
-
-    def _refresh_summary(self) -> None:
-        c = self.c
-        n_models, n_rt, active_rt = self._counts()
-        if hasattr(self, "_inventory_line"):
-            self._inventory_line.configure(
-                text=f"{t('Registered models')}: {n_models}   "
-                     f"{t('Installed runtimes')}: {n_rt}   "
-                     f"{t('Active runtime')}: {active_rt}")
-        for w in self._kv_rows.winfo_children():
-            w.destroy()
-        for k, v in ((t("Registered models"), n_models),
-                     (t("Installed runtimes"), n_rt),
-                     (t("Active runtime"), active_rt)):
-            fg = c["faint"] if v in ("—", t("none")) else c["text"]
-            key_value(self._kv_rows, c, k, v, value_fg=fg).pack(fill="x", pady=3)
-
     def _render_steps(self) -> None:
         c = self.c
         for w in self._steps_box.winfo_children():
@@ -777,12 +598,6 @@ class DashboardPage(Page):
         self._start_btn.set_text(
             t("Stop") if status in ("running", "starting")
             else t("Start server"))
-        if status == "running":
-            self._hint.configure(text=t("Serving at {url}",
-                                        url=self._endpoint_url()))
-        elif status == "stopped":
-            self._hint.configure(
-                text=t("Install a runtime and add models before starting."))
         self._tick_uptime()
         self._render_endpoints()
         self._refresh_cmd()
@@ -908,7 +723,8 @@ class DashboardPage(Page):
         }
         message = messages.get(result.get("reason"), result.get("error", ""))
         self._reason.configure(text="⚠  " + message)
-        self._reason.pack(fill="x", pady=(8, 0))
+        self._reason.pack(fill="x", padx=PAGE_PAD, pady=(0, 8),
+                          before=self._scroll)
         self.after(6000, self._reason.pack_forget)
 
     def _refresh_cmd(self) -> None:
@@ -1032,9 +848,6 @@ class DashboardPage(Page):
         server = self.ctx.services.get("server")
         if server is not None:
             self._on_status(server.get_status_dict())
-        self._refresh_summary()
-        self._render_endpoints()
-        self._refresh_cmd()
         if self._logs_dirty and self._logs_open:
             self._reload_logs()
         self._logs_dirty = False
