@@ -363,6 +363,41 @@ class TestAppLayout(_TkTest):
                     app._on_close()
                 logs.close()
 
+    def test_settings_coalesces_layout_and_builds_appearance_lazily(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            app, logs = self._build_app(Path(td))
+            try:
+                app.ctx.collapsible_states["settings.appearance"] = False
+                app.show_page("settings")
+                app._cancel_prewarm()
+                app.root.update()
+                page = app._pages["settings"]
+                self.assertEqual(page._theme_btns, {})
+                page._appearance_card.set_open(True)
+                self.assertEqual(set(page._theme_btns), set(theme.theme_names()))
+
+                page._cancel_layout()
+                page._schedule_layout()
+                first = page._layout_id
+                page._schedule_layout()
+                second = page._layout_id
+                self.assertNotEqual(first, second)
+                self.assertNotIn(first, page._after_ids)
+
+                page._max_dl.delete(0, "end")
+                page._max_dl.insert(0, "4")
+                page._schedule_save(0)
+                page.after_cancel(page._autosave_id)
+                page._autosave_id = None
+                with mock.patch.object(page, "_serialize",
+                                        wraps=page._serialize) as serialize:
+                    page._save()
+                    self.assertEqual(serialize.call_count, 1)
+            finally:
+                if app.root.winfo_exists():
+                    app._on_close()
+                logs.close()
+
 
 class TestNavigationRanking(unittest.TestCase):
     def test_nearest_section_wins_before_alignment(self) -> None:

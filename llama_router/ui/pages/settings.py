@@ -19,13 +19,14 @@ class SettingsPage(Page):
     def __init__(self, parent: tk.Widget, ctx) -> None:
         super().__init__(parent, ctx)
         self._autosave_id: str | None = None
-        self._server_layout_id: str | None = None
-        self._api_layout_id: str | None = None
+        self._layout_id: str | None = None
+        self._form_dirty = False
         self._saved_form: dict = {}
         self._build()
 
     def _build(self) -> None:
         c = self.c
+        self._form_dirty = False
         head = self.header(t("configuration"), t("Settings"))
         self._save_state = tk.Label(head.actions, text=t("Saved automatically"),
                                     bg=c["bg"], fg=c["faint"],
@@ -41,22 +42,14 @@ class SettingsPage(Page):
         # ── Appearance ──────────────────────────────────────────────────────
         theme_card = CollapsibleCard(body, c, t("Appearance"),
                                      state_key="settings.appearance",
+                                     on_toggle=self._on_appearance_toggle,
                                      accent=c["panel_accent"])
         theme_card.pack(fill="x", padx=PAGE_PAD, pady=(0, 14))
-        pick = tk.Frame(theme_card.content, bg=c["surface"])
-        pick.pack(fill="x", pady=(10, 2))
+        self._appearance_card = theme_card
+        self._appearance_built = False
         self._theme_btns = {}
-        for _name in theme.theme_names():
-            btn = PillButton(pick, c, theme.label(_name), kind="ghost",
-                             size=9, padx=18, height=30,
-                             command=lambda n=_name: self._pick_theme(n))
-            btn.pack(side="left", padx=(0, 8))
-            self._theme_btns[_name] = btn
-        tk.Label(theme_card.content,
-                 text=t("Theme applies instantly and is saved automatically"),
-                 bg=c["surface"], fg=c["faint"], font=theme.ui(8)).pack(
-            anchor="w", pady=(4, 0))
-        self._set_theme_active(cfg.theme)
+        if theme_card.is_open:
+            self._build_appearance()
 
         # ── Application ──────────────────────────────────────────────────────
         app_card = CollapsibleCard(body, c, t("Application"),
@@ -100,7 +93,7 @@ class SettingsPage(Page):
         grid2 = self._grid(srv_card.content, two_columns=True)
         self._server_grid = grid2
         self._server_compact: bool | None = None
-        grid2.bind("<Configure>", self._schedule_server_layout, add="+")
+        grid2.bind("<Configure>", self._schedule_layout, add="+")
         self._expose = self._combo(grid2, 0, t("Network exposure"),
                                    [t("This machine only"), t("Local network"),
                                     t("Custom host")],
@@ -133,7 +126,7 @@ class SettingsPage(Page):
         self._show_api_details.trace_add(
             "write", lambda *_: self._apply_api_details_visibility())
         self._sync_host()
-        self.after_idle(self._layout_server_grid)
+        self._schedule_layout()
         self._saved_form = self._serialize()
         self._wire_autosave()
 
@@ -143,6 +136,30 @@ class SettingsPage(Page):
 
     def _pick_theme(self, name: str) -> None:
         self.ctx.apply_theme(name)
+
+    def _on_appearance_toggle(self, open_: bool) -> None:
+        if open_:
+            self._build_appearance()
+
+    def _build_appearance(self) -> None:
+        if self._appearance_built:
+            return
+        c = self.c
+        pick = tk.Frame(self._appearance_card.content, bg=c["surface"])
+        pick.pack(fill="x", pady=(10, 2))
+        for name in theme.theme_names():
+            btn = PillButton(pick, c, theme.label(name), kind="ghost",
+                             size=9, padx=18, height=30,
+                             command=lambda n=name: self._pick_theme(n))
+            btn.pack(side="left", padx=(0, 8))
+            self._theme_btns[name] = btn
+        tk.Label(
+            self._appearance_card.content,
+            text=t("Theme applies instantly and is saved automatically"),
+            bg=c["surface"], fg=c["faint"], font=theme.ui(8),
+        ).pack(anchor="w", pady=(4, 0))
+        self._appearance_built = True
+        self._set_theme_active(self._config().theme)
 
     def _set_theme_active(self, name: str) -> None:
         for _n, btn in self._theme_btns.items():
@@ -228,13 +245,22 @@ class SettingsPage(Page):
             return row // 2, (row % 2) * 2
         return row, 0
 
-    def _schedule_server_layout(self, _event=None) -> None:
-        if self._server_layout_id is not None:
-            self.after_cancel(self._server_layout_id)
-        self._server_layout_id = self.after(40, self._layout_server_grid)
+    def _schedule_layout(self, _event=None) -> None:
+        if self._layout_id is not None:
+            self.after_cancel(self._layout_id)
+        self._layout_id = self.after(40, self._layout)
+
+    def _layout(self) -> None:
+        self._layout_id = None
+        self._layout_server_grid()
+        self._layout_api_actions()
+
+    def _cancel_layout(self) -> None:
+        if self._layout_id is not None:
+            self.after_cancel(self._layout_id)
+            self._layout_id = None
 
     def _layout_server_grid(self) -> None:
-        self._server_layout_id = None
         grid = self._server_grid
         width = grid.winfo_width()
         if width <= 1:
@@ -257,8 +283,6 @@ class SettingsPage(Page):
                 widget.grid_configure(
                     row=row, column=column + 1,
                     padx=(0, 22 if not compact and column == 0 else 0))
-        self.after_idle(self._layout_api_actions)
-
     def _label(self, grid: tk.Frame, row: int, text: str) -> None:
         logical_row = row
         row, col = self._cell(grid, logical_row)
@@ -305,18 +329,11 @@ class SettingsPage(Page):
                    command=self._copy_api_key).pack(side="left", padx=(4, 0))
         PillButton(actions, self.c, t("Generate"), size=7, padx=7, height=24,
                    command=self._generate_api_key).pack(side="left", padx=(4, 0))
-        wrap.bind("<Configure>", self._schedule_api_layout, add="+")
-        self.after_idle(self._layout_api_actions)
+        wrap.bind("<Configure>", self._schedule_layout, add="+")
         self._render_api_key(entry)
         return entry
 
-    def _schedule_api_layout(self, _event=None) -> None:
-        if self._api_layout_id is not None:
-            self.after_cancel(self._api_layout_id)
-        self._api_layout_id = self.after(40, self._layout_api_actions)
-
     def _layout_api_actions(self) -> None:
-        self._api_layout_id = None
         if not hasattr(self, "_api_wrap"):
             return
         compact = (bool(self._server_compact)
@@ -445,11 +462,7 @@ class SettingsPage(Page):
             var.trace_add("write", lambda *_: self._schedule_save(0))
 
     def _schedule_save(self, delay: int = 650) -> None:
-        if self._serialize() == self._saved_form:
-            if self._autosave_id is not None:
-                self.after_cancel(self._autosave_id)
-                self._autosave_id = None
-            return
+        self._form_dirty = True
         if self._autosave_id is not None:
             self.after_cancel(self._autosave_id)
         self._save_state.configure(text=t("Saving…"), fg=self.c["warn"])
@@ -470,6 +483,14 @@ class SettingsPage(Page):
 
     def _save(self) -> None:
         self._autosave_id = None
+        if not self._form_dirty:
+            return
+        form = self._serialize()
+        if form == self._saved_form:
+            self._form_dirty = False
+            self._save_state.configure(text=t("Saved automatically"),
+                                       fg=self.c["faint"])
+            return
         cfg = self._config()
         previous_language = cfg.language
         lang_code = {v: k for k, v in LANGUAGES.items()}.get(
@@ -507,7 +528,8 @@ class SettingsPage(Page):
         if self._tray_var is not None:
             patch["minimize_to_tray"] = self._tray_var.get()
         self.ctx.services["config"].update(patch)
-        self._saved_form = self._serialize()
+        self._saved_form = form
+        self._form_dirty = False
         if lang_code != previous_language:
             self.ctx.apply_language(lang_code)
             return
@@ -515,6 +537,7 @@ class SettingsPage(Page):
                                    fg=self.c["faint"])
 
     def _reset_server(self) -> None:
+        self._cancel_layout()
         if self._autosave_id is not None:
             self.after_cancel(self._autosave_id)
             self._autosave_id = None
@@ -524,8 +547,10 @@ class SettingsPage(Page):
         self._build()
 
     def teardown(self) -> None:
+        self._cancel_layout()
         if self._autosave_id is not None:
             self.after_cancel(self._autosave_id)
             self._autosave_id = None
+        if self._form_dirty:
             self._save()
         super().teardown()

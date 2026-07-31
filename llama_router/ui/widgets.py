@@ -757,6 +757,7 @@ class CollapsibleCard(Card):
             expanded = bool(self._state_store.get(state_key, expanded))
         self._open = expanded
         self._on_toggle = on_toggle
+        self._refresh_id: str | None = None
         self.header = tk.Frame(self.body, bg=c["surface"])
         self.header.pack(fill="x")
         heading = section_label(self.header, c, title, accent)
@@ -769,6 +770,7 @@ class CollapsibleCard(Card):
         self.content = tk.Frame(self.body, bg=c["surface"])
         if expanded:
             self.content.pack(fill="both", expand=True, pady=(10, 0))
+        self.bind("<Destroy>", self._on_destroy, add="+")
 
     def toggle(self) -> None:
         self.set_open(not self._open)
@@ -796,11 +798,23 @@ class CollapsibleCard(Card):
         # A fill-height ScrollFrame can keep its body at the old viewport
         # height when only a child's requested height changes. Refresh the
         # nearest owner once, after lazy content has reached its final size.
-        self.after_idle(self._refresh_scroll_layout)
+        if self._refresh_id is not None:
+            self.after_cancel(self._refresh_id)
+        self._refresh_id = self.after_idle(self._refresh_scroll_layout)
         if self._state_key and self._state_store is not None:
             self._state_store[self._state_key] = open_
 
+    def _on_destroy(self, event) -> None:
+        if event.widget is not self or self._refresh_id is None:
+            return
+        try:
+            self.after_cancel(self._refresh_id)
+        except tk.TclError:
+            pass
+        self._refresh_id = None
+
     def _refresh_scroll_layout(self) -> None:
+        self._refresh_id = None
         owner = self.master
         while owner is not None:
             if isinstance(owner, ScrollFrame):
