@@ -1,6 +1,6 @@
 """Profiles — per-model inference presets that become models-preset.ini
-sections. Left: one tree of models with their profiles (checkbox = active).
-Right: the full parameter editor, organised in sections."""
+sections. The models, active profiles, identity, and parameter editor share
+one vertical workspace."""
 from __future__ import annotations
 
 import json
@@ -386,7 +386,7 @@ class ProfilesPage(Page):
     def __init__(self, parent: tk.Widget, ctx) -> None:
         super().__init__(parent, ctx)
         c = self.c
-        self.header(t("model workspace"), t("Models & Profiles"),
+        self.header(t("model workspace"), t("Models"),
                     t("Models, routes and generated preset in one place"))
         self._cols = ScrollFrame(self, dict(c, bg=c["bg"]))
         self._cols.pack(fill="both", expand=True, padx=PAGE_PAD,
@@ -403,19 +403,25 @@ class ProfilesPage(Page):
             sections, c, t("Profiles"), expanded=True,
             state_key="profiles-workspace", accent=c["panel_request"])
         self._profiles_card.pack(fill="x", pady=(0, 10))
-        profile_actions = self._profiles_card.actions
+
+        profile_stack = tk.Frame(self._profiles_card.content, bg=c["surface"])
+        profile_stack.pack(fill="both", expand=True)
+        profile_stack.columnconfigure(0, weight=1)
+        profile_stack.rowconfigure(0, weight=0)
+        profile_stack.rowconfigure(1, weight=1)
+        self._profile_cols = profile_stack
+
+        self._active_profiles_card = CollapsibleCard(
+            profile_stack, c, t("Models"), expanded=True, pad=12,
+            state_key="active-profiles", accent=c["panel_request"])
+        self._active_profiles_card.grid(
+            row=0, column=0, sticky="ew", pady=(0, 12))
+        profile_actions = self._active_profiles_card.actions
         PillButton(profile_actions, c, t("New"), kind="primary", size=8,
                    padx=10, height=26, command=self._new).pack(side="left")
         PillButton(profile_actions, c, t("Delete"), size=8, padx=10,
                    height=26, command=self._delete).pack(
                        side="left", padx=(6, 0))
-
-        profile_cols = tk.Frame(self._profiles_card.content, bg=c["surface"])
-        profile_cols.pack(fill="x")
-        profile_cols.columnconfigure(0, weight=0)
-        profile_cols.columnconfigure(1, weight=1)
-        profile_cols.rowconfigure(0, weight=1)
-        self._profile_cols = profile_cols
 
         self._preset_view: PresetPage | None = None
         self._preset_card = CollapsibleCard(
@@ -424,19 +430,12 @@ class ProfilesPage(Page):
             on_toggle=self._on_preset_card_toggle)
         self._preset_card.pack(fill="x", pady=(0, 10))
 
-        # ── Left: models → profiles tree ─────────────────────────────────────
-        self._profile_list = tk.Frame(profile_cols, bg=c["surface"], width=210)
-        left = self._profile_list
-        left.grid(row=0, column=0, sticky="nw", padx=(0, 14))
+        # ── Models ───────────────────────────────────────────────────────────
+        self._profile_list = self._active_profiles_card
+        active_content = self._active_profiles_card.content
 
-        treepanel = tk.Frame(left, bg=c["surface"],
-                             highlightbackground=c["panel_accent"],
-                             highlightthickness=1)
-        treepanel.pack(fill="x")
-        tk.Label(treepanel, text=theme.track(t("Models & profiles")),
-                 bg=c["surface"], fg=c["panel_accent"],
-                 font=theme.mono(8, "bold"),
-                 padx=10, pady=9).pack(anchor="w")
+        treepanel = tk.Frame(active_content, bg=c["surface"])
+        treepanel.pack(fill="both", expand=True)
         self._tree = ttk.Treeview(treepanel, columns=("on",), show="tree",
                                   selectmode="browse")
         self._tree.column("#0", width=162)
@@ -445,16 +444,17 @@ class ProfilesPage(Page):
                              command=self._tree.yview)
         self._tree.configure(yscrollcommand=vbar.set)
         vbar.pack(side="right", fill="y")
-        self._tree.pack(fill="x", padx=1, pady=1)
+        self._tree.pack(fill="both", expand=True, padx=1, pady=1)
         self._tree.tag_configure("model", foreground=c["muted"])
         self._tree.tag_configure("model-active", foreground=c["accent"])
         self._tree.tag_configure("active", foreground=c["accent_hi"])
         self._tree.tag_configure("off", foreground=c["faint"])
         self._tree.bind("<Button-1>", self._on_tree_click)
+        self._tree.bind("<Right>", self._focus_editor_from_tree, add="+")
         self._tree.bind("<<TreeviewSelect>>", lambda e: self._on_select())
         enable_row_hover(self._tree, c)
 
-        lbtns2 = tk.Frame(left, bg=c["surface"])
+        lbtns2 = tk.Frame(active_content, bg=c["surface"])
         lbtns2.pack(fill="x", pady=(6, 0))
         PillButton(lbtns2, c, t("Activate all"), kind="accent",
                    size=9, padx=12, height=28,
@@ -464,11 +464,9 @@ class ProfilesPage(Page):
                    command=lambda: self._set_all_active(False)
                    ).pack(anchor="w", pady=(6, 0))
 
-        # ── Right: editor ────────────────────────────────────────────────────
-        self._editor = tk.Frame(profile_cols, bg=c["surface"],
-                                highlightbackground=c["panel_accent"],
-                                highlightthickness=1)
-        self._editor.grid(row=0, column=1, sticky="nsew")
+        # ── Profile editor ───────────────────────────────────────────────────
+        self._editor = tk.Frame(profile_stack, bg=c["surface"])
+        self._editor.grid(row=1, column=0, sticky="nsew")
         self._fields: dict[str, tuple] = {}  # key → (kind, widget-or-var, extra)
         self._autosave_id: str | None = None
         self._loading_profile = False
@@ -528,28 +526,35 @@ class ProfilesPage(Page):
         # The workspace's outer ScrollFrame owns vertical movement. Keeping
         # the editor as a plain frame avoids a nested scrollbar in the form.
         self._editor_body = tk.Frame(self._editor, bg=c["surface"])
-        self._editor_body.pack(fill="both", expand=True, padx=18, pady=16)
-        outer = self._editor_body
+        self._editor_body.pack(fill="both", expand=True)
 
-        top = tk.Frame(outer, bg=c["surface"])
-        top.pack(fill="x")
-        section_label(top, c, t("Profile"), c["panel_accent"]).pack(side="left")
-        self._save_state = tk.Label(top, text=t("Saved automatically"),
+        # Profile and Parameters are sibling tabs. The profile tab owns only
+        # identity/model context; Parameters keeps its existing nested groups
+        # and lazy advanced form below.
+        self._profile_card = CollapsibleCard(
+            self._editor_body, c, t("Profile"), expanded=True, pad=12,
+            state_key="profile-editor", accent=c["panel_accent"])
+        self._profile_card.pack(fill="x", pady=(0, 8))
+        profile_actions = self._profile_card.actions
+        self._save_state = tk.Label(profile_actions,
+                                    text=t("Saved automatically"),
                                     bg=c["surface"], fg=c["faint"],
                                     font=theme.ui(8))
-        self._save_state.pack(side="right")
+        self._save_state.pack(side="left", padx=(0, 10))
         reset_profile = PillButton(
-            top, c, t("Reset profile"), size=8, padx=10, height=26,
+            profile_actions, c, t("Reset profile"), size=8, padx=10, height=26,
             command=self._reset_profile)
-        reset_profile.pack(side="right", padx=(0, 10))
+        reset_profile.pack(side="left")
         Tooltip(reset_profile, c,
                 t("Restore the default parameters while keeping the profile name and route alias."))
+
+        profile = self._profile_card.content
 
         self._copy_map: dict[str, str] = {}  # display → profile_id
         self._presets = _load_sampling_presets()
 
         self._model_summary = tk.Frame(
-            outer, bg=c["surface_hi"], highlightbackground=c["panel_accent"],
+            profile, bg=c["surface_hi"], highlightbackground=c["panel_accent"],
             highlightthickness=1)
         self._model_summary.pack(fill="x", pady=(12, 8))
         self._model_name = tk.Label(
@@ -561,8 +566,7 @@ class ProfilesPage(Page):
             font=theme.mono(8), anchor="w")
         self._model_meta.pack(fill="x", padx=12, pady=(0, 9))
 
-        # Identity row stays fixed above the scrolling parameter form.
-        ident = tk.Frame(outer, bg=c["surface"])
+        ident = tk.Frame(profile, bg=c["surface"])
         ident.pack(fill="x", pady=(12, 6))
         ident.columnconfigure(1, weight=1)
         ident.columnconfigure(0, minsize=90)
@@ -579,10 +583,14 @@ class ProfilesPage(Page):
         self._label(ident, 3, 0, t("Load on startup"))
         self._make_field(ident, 3, 1, "load-on-startup", "bool", None)
 
-        # The essential inference controls stay visible.  The complete form
+        self._parameters_card = CollapsibleCard(
+            self._editor_body, c, t("Parameters"), expanded=True, pad=12,
+            state_key="profile-parameters", accent=c["panel_request"])
+        self._parameters_card.pack(fill="both", expand=True, pady=(0, 8))
+        outer = self._parameters_card.content
+
+        # The essential inference controls stay visible. The complete form
         # remains available below for less common llama-server options.
-        section_label(outer, c, t("Parameters"), c["panel_accent"]).pack(
-            anchor="w", pady=(12, 4))
         quick_fields = {field[0]: field for _, fields in _SECTIONS
                         for field in fields if field[0] in _QUICK_FIELD_KEYS}
         self._sliders: dict[str, tuple[ttk.Scale, tk.Label, object]] = {}
@@ -860,7 +868,7 @@ class ProfilesPage(Page):
             self._loading_profile = False
 
     def _label(self, parent, row, col, text) -> None:
-        tk.Label(parent, text=text, bg=parent.cget("bg"), fg=self.c["muted"],
+        tk.Label(parent, text=t(text), bg=parent.cget("bg"), fg=self.c["muted"],
                  font=theme.ui(9)).grid(row=row, column=col, sticky="w",
                                         pady=4, padx=(0, 10))
 
@@ -1358,7 +1366,15 @@ class ProfilesPage(Page):
     def _show_editor(self) -> None:
         self._editor_hint.place_forget()
         if not self._editor_body.winfo_ismapped():
-            self._editor_body.pack(fill="both", expand=True, padx=18, pady=16)
+            self._editor_body.pack(fill="both", expand=True)
+
+    def _focus_editor_from_tree(self, _event=None) -> str:
+        """Move from the profile list into the editor without leaving the page."""
+        if not self._name.winfo_ismapped():
+            return "break"
+        self._cols.see(self._name)
+        self._name.focus_set()
+        return "break"
 
     # ── Actions ──────────────────────────────────────────────────────────────
 

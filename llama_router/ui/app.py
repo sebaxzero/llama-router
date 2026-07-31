@@ -65,7 +65,7 @@ class AppContext:
 PAGES: dict[str, tuple[str, type]] = {
     "dashboard":  ("Dashboard",  DashboardPage),
     "playground": ("Playground", PlaygroundPage),
-    "profiles":  ("Models & Profiles", ProfilesPage),
+    "profiles":  ("Models",          ProfilesPage),
     "runtime":   ("Runtime",   RuntimePage),
     "settings":  ("Settings",  SettingsPage),
 }

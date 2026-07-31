@@ -31,6 +31,8 @@ CATALOGS: dict[str, dict[str, str]] = {
         "Models": "Modelos",
         "Models & Profiles": "Modelos y perfiles",
         "Profiles": "Perfiles",
+        "Dashboard": "Panel",
+        "Runtime": "Runtime",
         "Server": "Servidor",
         "Settings": "Ajustes",
         "server": "servidor",
@@ -42,6 +44,9 @@ CATALOGS: dict[str, dict[str, str]] = {
             "Preparando interfaz… {done}/{total}",
         "Interface ready": "Interfaz lista",
         "a control panel for llama.cpp": "panel de control para llama.cpp",
+        "Active runtime and routes available to llama-server.":
+            "Runtime activo y rutas disponibles para llama-server.",
+        "{count} active profiles": "{count} perfiles activos",
 
         # ── Page eyebrows / placeholders ─────────────────────────────────────
         "panel": "panel",
@@ -60,6 +65,10 @@ CATALOGS: dict[str, dict[str, str]] = {
         "Name": "Nombre",
         "Size": "Tamaño",
         "State": "Estado",
+        "Quant": "Cuantización",
+        "Params": "Parámetros",
+        "Ctx": "Ctx",
+        "VRAM": "VRAM",
         "ready": "listo",
         "missing": "no encontrado",
         "Remove from list": "Quitar de la lista",
@@ -76,6 +85,8 @@ CATALOGS: dict[str, dict[str, str]] = {
         "New": "Nuevo",
         "Delete": "Eliminar",
         "Profile": "Perfil",
+        "Parameters": "Parámetros",
+        "Reset": "Restablecer",
         "Save profile": "Guardar perfil",
         "Reset profile": "Restablecer perfil",
         "Restore the default parameters while keeping the profile name and route alias.":
@@ -105,14 +116,26 @@ CATALOGS: dict[str, dict[str, str]] = {
             "Elige un perfil para editarlo — o crea uno con Nuevo.",
         "Activate all": "Activar todos",
         "Deactivate all": "Desactivar todos",
+        "Reset every parameter in this category.":
+            "Restablece todos los parámetros de esta categoría.",
+        "Reset every parameter in this section.":
+            "Restablece todos los parámetros de esta sección.",
         "Auto": "Auto",
         "ambiguous — pick manually": "ambiguo — elige manualmente",
         "nothing found next to the model": "no se encontró junto al modelo",
+        "model workspace": "espacio de modelos",
+        "Models, routes and generated preset in one place":
+            "Modelos, rutas y preset generado en un solo lugar",
+        "trained max: {value}": "máximo entrenado: {value}",
+        "Enable a model first — then tune its profiles here.":
+            "Habilita primero un modelo — luego ajusta aquí sus perfiles.",
         # Profile editor sections
         "Core": "Núcleo",
+        "Capacity": "Capacidad",
         "Sampling": "Muestreo",
         "Chat & templates": "Chat y plantillas",
         "KV cache": "Caché KV",
+        "RoPE": "RoPE",
         "Performance": "Rendimiento",
         "Multimodal": "Multimodal",
         "Speculative decoding": "Decodificación especulativa",
@@ -120,6 +143,19 @@ CATALOGS: dict[str, dict[str, str]] = {
         # Profile editor fields
         "Batch size": "Tamaño de batch",
         "Micro-batch size": "Tamaño de micro-batch",
+        "Devices": "Dispositivos",
+        "Load mode": "Modo de carga",
+        "Minimum fit context": "Contexto mínimo de ajuste",
+        "Shared cache limit (MiB)": "Límite de caché compartida (MiB)",
+        "Typical-P": "Typical-P",
+        "Top-N sigma": "Sigma Top-N",
+        "Mirostat": "Mirostat",
+        "Mirostat LR": "Tasa de aprendizaje de Mirostat",
+        "Reasoning format": "Formato de razonamiento",
+        "Reasoning budget": "Presupuesto de razonamiento",
+        "Draft devices": "Dispositivos del draft",
+        "Draft GPU layers": "Capas GPU del draft",
+        "Draft tokens (n-min)": "Tokens draft (n-mín.)",
         "Flash attention": "Flash attention",
         "Sleep after idle (s)": "Dormir tras inactividad (s)",
         "Temperature": "Temperatura",
@@ -230,6 +266,8 @@ CATALOGS: dict[str, dict[str, str]] = {
         "Reload": "Recargar",
         "Save file": "Guardar archivo",
         "edited — save or reload": "editado — guarda o recarga",
+        "invalid INI — changes not saved":
+            "INI inválido — cambios no guardados",
         "could not write file": "no se pudo escribir el archivo",
         "; empty — enable models and activate profiles":
             "; vacío — habilita modelos y activa perfiles",
@@ -256,6 +294,8 @@ CATALOGS: dict[str, dict[str, str]] = {
         "Stop timeout (s)": "Tiempo de parada (s)",
         "Continuous batching": "Batching continuo",
         "Prometheus metrics": "Métricas Prometheus",
+        "Autoload models": "Cargar modelos automáticamente",
+        "Batch CPU threads": "Hilos de CPU por lote",
         "Restart on crash": "Reiniciar si se cae",
         "Extra arguments": "Argumentos extra",
 
