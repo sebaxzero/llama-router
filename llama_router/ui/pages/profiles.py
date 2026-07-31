@@ -15,8 +15,7 @@ from llama_router.ui.pages.base import PAGE_PAD, Page
 from llama_router.ui.pages.models import ModelsPage
 from llama_router.ui.pages.preset import PresetPage
 from llama_router.ui.widgets import (AutoScrollbar, CollapsibleCard, PillButton,
-                                     ScrollFrame, Tooltip,
-                                     section_label, enable_row_hover)
+                                     ScrollFrame, Tooltip, enable_row_hover)
 
 _CACHE_TYPES = ["f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0",
                 "iq4_nl"]
@@ -373,13 +372,20 @@ def _format_extra(params: dict) -> str:
                      if k not in _STRUCTURED and k not in _LEGACY_LOAD_KEYS)
 
 
-def _load_sampling_presets() -> list[dict]:
-    """Curated per-model-family sampling presets, bundled in assets/."""
-    fp = Path(__file__).resolve().parents[2] / "assets" / "sampling-presets.json"
-    try:
-        return json.loads(fp.read_text(encoding="utf-8")).get("presets", [])
-    except (OSError, ValueError):
-        return []
+_SAMPLING_PRESETS: tuple[dict, ...] | None = None
+
+
+def _load_sampling_presets() -> tuple[dict, ...]:
+    """Load bundled sampling presets once; the UI treats them as read-only."""
+    global _SAMPLING_PRESETS
+    if _SAMPLING_PRESETS is None:
+        fp = Path(__file__).resolve().parents[2] / "assets" / "sampling-presets.json"
+        try:
+            data = json.loads(fp.read_text(encoding="utf-8"))
+            _SAMPLING_PRESETS = tuple(data.get("presets", []))
+        except (OSError, ValueError):
+            _SAMPLING_PRESETS = ()
+    return _SAMPLING_PRESETS
 
 
 class ProfilesPage(Page):
@@ -448,7 +454,6 @@ class ProfilesPage(Page):
         self._tree.tag_configure("model", foreground=c["muted"])
         self._tree.tag_configure("model-active", foreground=c["accent"])
         self._tree.tag_configure("active", foreground=c["accent_hi"])
-        self._tree.tag_configure("off", foreground=c["faint"])
         self._tree.bind("<Button-1>", self._on_tree_click)
         self._tree.bind("<Right>", self._focus_editor_from_tree, add="+")
         self._tree.bind("<<TreeviewSelect>>", lambda e: self._on_select())
@@ -473,14 +478,13 @@ class ProfilesPage(Page):
         self._build_editor()
 
         self._current: str | None = None
+        self._model_snapshot = []
+        self._profiles_snapshot = {}
         self._shown_once = False
         for event in ("models_scanned", "model_updated", "model_removed"):
             self.subscribe(event, self._on_models_changed)
         self.subscribe("preset_imported", self._on_preset_imported)
         self._refresh_tree()
-        # Preset is small and contributes actions to the card header. Build it
-        # now so the first expansion does not visibly recompose that header.
-        self._ensure_preset_view()
         if self._models_card.is_open:
             self._ensure_library_view()
 
@@ -498,7 +502,10 @@ class ProfilesPage(Page):
 
     def _on_preset_card_toggle(self, open_: bool) -> None:
         if open_:
-            self._ensure_preset_view()
+            if self._preset_view is None:
+                self._ensure_preset_view()
+            else:
+                self._preset_view.on_card_open()
 
     def _ensure_preset_view(self) -> None:
         if self._preset_view is not None:
@@ -868,7 +875,7 @@ class ProfilesPage(Page):
             self._loading_profile = False
 
     def _label(self, parent, row, col, text) -> None:
-        tk.Label(parent, text=t(text), bg=parent.cget("bg"), fg=self.c["muted"],
+        tk.Label(parent, text=text, bg=parent.cget("bg"), fg=self.c["muted"],
                  font=theme.ui(9)).grid(row=row, column=col, sticky="w",
                                         pady=4, padx=(0, 10))
 
@@ -1051,23 +1058,30 @@ class ProfilesPage(Page):
 
     def _refresh_tree(self, keep: str | None = None) -> None:
         self._tree.delete(*self._tree.get_children())
-        models = [m for m in self._models.list() if m.enabled]
-        row_count = sum(1 + len(self._profiles.list(m.id)) for m in models)
+        models = self._models.list()
+        grouped = self._profiles.by_model()
+        profile_snapshot = {
+            model.id: sorted(grouped.get(model.id, ()),
+                             key=lambda profile: profile.name.casefold())
+            for model in models
+        }
+        self._model_snapshot = models
+        self._profiles_snapshot = profile_snapshot
+        enabled_models = [model for model in models if model.enabled]
+        row_count = sum(1 + len(profile_snapshot[model.id])
+                        for model in enabled_models)
         self._tree.configure(height=max(3, min(12, row_count)))
-        if not models:
-            any_models = bool(self._models.list())
+        if not enabled_models:
+            any_models = bool(models)
             message = (t("Enable a model first — then tune its profiles here.")
                        if any_models else
                        t("Add models first — then tune their profiles here."))
             self._show_hint(message)
             return
-        for m in models:
-            self._profiles.ensure_defaults(m.id)
-            plist = self._profiles.list(m.id)
+        for m in enabled_models:
+            plist = profile_snapshot[m.id]
             n_active = sum(1 for p in plist if p.active)
             mid = f"m:{m.id}"
-            # A disabled model never reaches models-preset.ini — show it (and
-            # its profiles) dimmed so the Models toggle is visible here too.
             self._tree.insert("", "end", iid=mid, text=m.name, open=True,
                               values=(f"{n_active}/{len(plist)}",),
                               tags=(("model-active",) if n_active
@@ -1117,7 +1131,7 @@ class ProfilesPage(Page):
                 self._profiles.set_active(oid, not p.active)
                 self._refresh_tree(keep=row)
         elif kind == "m":
-            plist = self._profiles.list(oid)
+            plist = self._profiles_snapshot.get(oid, ())
             self._profiles.set_active_all(
                 oid, any(not p.active for p in plist))
             self._refresh_tree(keep=row)
@@ -1200,10 +1214,10 @@ class ProfilesPage(Page):
 
         # Copy params from every profile of every *other* model.
         self._copy_map = {}
-        for m in self._models.list():
+        for m in self._model_snapshot:
             if m.id == p.model_id:
                 continue
-            for prof in self._profiles.list(m.id):
+            for prof in self._profiles_snapshot.get(m.id, ()):
                 self._copy_map[f"{m.name} · {prof.name}"] = prof.id
         self._copy_cb.configure(values=list(self._copy_map))
         self._copy_cb.set(t("Copy params from…") if self._copy_map else "")

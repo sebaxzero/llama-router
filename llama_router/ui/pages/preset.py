@@ -18,6 +18,8 @@ class PresetPage(Page):
     def __init__(self, parent: tk.Widget, ctx, embedded: bool = False,
                  actions_parent: tk.Widget | None = None) -> None:
         super().__init__(parent, ctx)
+        self._embedded = embedded
+        self._external_dirty = False
         c = self.c
         body_bg = c["surface"] if embedded else c["bg"]
         self.configure(bg=body_bg)
@@ -94,6 +96,7 @@ class PresetPage(Page):
         self._text.insert("1.0", content or t("; empty — enable models and activate profiles"))
         self._text.edit_modified(False)
         self._loading = False
+        self._external_dirty = False
         self._set_dirty(False)
 
     def _save(self) -> None:
@@ -142,9 +145,19 @@ class PresetPage(Page):
             text=t("edited — save or reload") if dirty else "")
 
     def _on_external_change(self, _data=None) -> None:
+        if self._embedded and not self.winfo_ismapped():
+            self._external_dirty = True
+            return
         if not self._dirty:
             self._reload()
 
+    def on_card_open(self) -> None:
+        """Refresh deferred external changes just before the card is mapped."""
+        if self._external_dirty and not self._dirty:
+            self._reload()
+
     def on_show(self) -> None:
+        if self._embedded and not self.winfo_ismapped():
+            return
         if not self._dirty:
             self._reload()

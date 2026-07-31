@@ -306,6 +306,81 @@ class TestAppLayout(_TkTest):
                     pass
                 logs.close()
 
+    def test_profiles_refresh_snapshots_once_and_hides_disabled_models(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            app, logs = self._build_app(Path(td))
+            app._cancel_prewarm()
+            models = app.ctx.services["models"]
+            profiles = app.ctx.services["profiles"]
+            models._models["enabled"] = ModelEntry(
+                id="enabled", name="Enabled model", path="enabled.gguf")
+            models._models["disabled"] = ModelEntry(
+                id="disabled", name="Disabled model", path="disabled.gguf",
+                enabled=False)
+            enabled_profile = profiles.create(
+                "enabled", "Default", {"n-gpu-layers": -1})
+            profiles.create("disabled", "Hidden", {})
+            try:
+                app.show_page("profiles")
+                app._cancel_prewarm()
+                page = app._pages["profiles"]
+                with mock.patch.object(models, "list", wraps=models.list) as list_call, \
+                        mock.patch.object(profiles, "by_model",
+                                           wraps=profiles.by_model) as grouped_call, \
+                        mock.patch.object(profiles, "ensure_defaults",
+                                           wraps=profiles.ensure_defaults) as defaults_call:
+                    page._refresh_tree()
+                self.assertEqual(list_call.call_count, 1)
+                self.assertEqual(grouped_call.call_count, 1)
+                self.assertEqual(defaults_call.call_count, 0)
+                roots = page._tree.get_children()
+                self.assertIn("m:enabled", roots)
+                self.assertNotIn("m:disabled", roots)
+                self.assertTrue(page._tree.exists(f"p:{enabled_profile.id}"))
+            finally:
+                try:
+                    if app.root.winfo_exists():
+                        app._on_close()
+                except tk.TclError:
+                    pass
+                logs.close()
+
+    def test_profiles_defers_preset_until_open_and_reload(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            app, logs = self._build_app(Path(td))
+            app._cancel_prewarm()
+            try:
+                app.show_page("profiles")
+                app._cancel_prewarm()
+                page = app._pages["profiles"]
+                self.assertIsNone(page._preset_view)
+
+                page._preset_card.set_open(True)
+                app.root.update_idletasks()
+                preset = page._preset_view
+                self.assertIsNotNone(preset)
+                old_text = preset._text.get("1.0", "end-1c")
+
+                page._preset_card.set_open(False)
+                app.root.update_idletasks()
+                new_text = "[*]\nmodel = fresh.gguf\n"
+                app.ctx.paths.preset_ini.write_text(new_text, encoding="utf-8")
+                preset._on_external_change()
+                self.assertTrue(preset._external_dirty)
+                self.assertEqual(preset._text.get("1.0", "end-1c"), old_text)
+
+                page._preset_card.set_open(True)
+                app.root.update_idletasks()
+                self.assertFalse(preset._external_dirty)
+                self.assertEqual(preset._text.get("1.0", "end-1c"), new_text)
+            finally:
+                try:
+                    if app.root.winfo_exists():
+                        app._on_close()
+                except tk.TclError:
+                    pass
+                logs.close()
+
     def test_dashboard_defers_closed_logs_until_open(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             with mock.patch.object(LogService, "get", autospec=True,
