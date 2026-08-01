@@ -54,9 +54,6 @@ def _lan_address() -> str:
 
 
 class DashboardPage(Page):
-    eyebrow = "panel"
-    title = "Dashboard"
-
     def __init__(self, parent: tk.Widget, ctx) -> None:
         super().__init__(parent, ctx)
         c = self.c
@@ -150,7 +147,6 @@ class DashboardPage(Page):
 
         self._logpanel = Card(body, c, border=c["panel_request"])
         logbar = tk.Frame(self._logpanel.body, bg=c["surface"])
-        self._logbar = logbar
         logbar.pack(fill="x")
         self._logs_title = section_label(
             logbar, c, t("Logs"), c["panel_request"])
@@ -222,7 +218,6 @@ class DashboardPage(Page):
         self._launch_card = launch
         self._launch_cmd = []
         cmd_box = tk.Frame(launch.content, bg=c["inset"])
-        self._cmd_box = cmd_box
         cmd_box.pack(fill="x")
         self._cmd_copy = PillButton(cmd_box, c, t("Copy"), size=8, padx=9,
                                     height=24, command=self._copy_launch_cmd)
@@ -337,9 +332,6 @@ class DashboardPage(Page):
             self._steps_box.pack_forget()
 
     # ── Data ─────────────────────────────────────────────────────────────────
-
-    def _endpoint_url(self) -> str:
-        return self._base_url() + "/v1"
 
     def _base_url(self) -> str:
         cfg = self._config()
@@ -541,43 +533,6 @@ class DashboardPage(Page):
                 f'-H "x-api-key: {key}" -d \'{{"model":"{model}","max_tokens":256,'
                 '"messages":[{"role":"user","content":"Hello!"}]}\''),
         }
-
-    def _show_client_guide(self) -> None:
-        win = tk.Toplevel(self)
-        win.title(t("Client connection guide"))
-        win.configure(bg=self.c["bg"])
-        win.geometry("760x520")
-        win.minsize(620, 420)
-        heading = tk.Frame(win, bg=self.c["bg"])
-        heading.pack(fill="x", padx=20, pady=(18, 10))
-        tk.Label(heading, text=t("Client connection guide"), bg=self.c["bg"],
-                 fg=self.c["title"], font=theme.ui(15, "bold")).pack(anchor="w")
-        tk.Label(heading, text=t("Use an active profile's route alias as the model name."),
-                 bg=self.c["bg"], fg=self.c["muted"],
-                 font=theme.ui(9)).pack(anchor="w", pady=(4, 0))
-        tabs = ttk.Notebook(win)
-        tabs.pack(fill="both", expand=True, padx=20, pady=(0, 10))
-        for label, example in self._client_examples().items():
-            page = tk.Frame(tabs, bg=self.c["surface"])
-            tabs.add(page, text=label)
-            code = tk.Text(page, bg=self.c["inset"], fg=self.c["text"], bd=0,
-                           padx=14, pady=14, font=theme.mono(9), wrap="word",
-                           insertbackground=self.c["text"])
-            code.insert("1.0", example)
-            code.configure(state="disabled")
-            code.pack(fill="both", expand=True, padx=10, pady=10)
-            PillButton(page, self.c, t("Copy example"), size=9, padx=14,
-                       command=lambda value=example: self._copy_value(value)).pack(
-                           anchor="e", padx=10, pady=(0, 10))
-        server = self.ctx.services.get("server")
-        key_required = (server.connection_info()["api_key_required"] if server
-                        else bool(self._config() and self._config().server.api_key))
-        auth = (t("API key is enabled; replace YOUR_API_KEY with the configured key.")
-                if key_required else
-                t("No API key is configured. Set one before exposing the server to a network."))
-        tk.Label(win, text=auth, bg=self.c["bg"], fg=self.c["warn"],
-                 font=theme.ui(9), anchor="w").pack(fill="x", padx=20,
-                                                   pady=(0, 16))
 
     def _copy_value(self, value: str) -> None:
         self.clipboard_clear()

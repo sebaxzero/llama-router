@@ -164,7 +164,7 @@ class TestDownloadManager(unittest.TestCase):
                 fresh = DownloadManager(env.paths, env.config, env.events)
                 completed = []
                 fresh.set_completion_handler(
-                    "runtime", lambda loaded: completed.append(loaded.id))
+                    lambda loaded: completed.append(loaded.id))
                 with mock.patch.object(
                         fresh, "_attempt_download",
                         side_effect=AssertionError("archive was downloaded again")):
@@ -367,7 +367,7 @@ class TestDownloadManager(unittest.TestCase):
                 fresh = DownloadManager(env.paths, env.config, env.events)
                 completed = []
                 fresh.set_completion_handler(
-                    "runtime", lambda item: completed.append(item.meta["marker"]))
+                    lambda item: completed.append(item.meta["marker"]))
                 fresh.load()
                 item = fresh.get("dl_resume")
                 self.assertIsNotNone(item)

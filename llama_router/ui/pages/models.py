@@ -8,7 +8,7 @@ from tkinter import filedialog, ttk
 from llama_router.core.utils import fmt_bytes
 from llama_router.i18n import t
 from llama_router.ui import theme
-from llama_router.ui.pages.base import PAGE_PAD, Page
+from llama_router.ui.pages.base import Page
 from llama_router.ui.widgets import AutoScrollbar, PillButton, enable_row_hover
 
 
@@ -35,24 +35,15 @@ def _fit(size: int, vram_bytes: int) -> str:
 
 
 class ModelsPage(Page):
-    def __init__(self, parent: tk.Widget, ctx, embedded: bool = False,
-                 actions_parent: tk.Widget | None = None) -> None:
+    def __init__(self, parent: tk.Widget, ctx,
+                 actions_parent: tk.Widget) -> None:
         super().__init__(parent, ctx)
         c = self.c
-        body_bg = c["surface"] if embedded else c["bg"]
+        body_bg = c["surface"]
         self.configure(bg=body_bg)
-        self._chip_bg = c["surface_hi"] if embedded else c["surface"]
-        pad = 0 if embedded else PAGE_PAD
-        if embedded:
-            if actions_parent is None:
-                actions = tk.Frame(self, bg=body_bg)
-                actions.pack(fill="x", pady=(0, 10))
-            else:
-                actions = actions_parent
-        else:
-            page_head = self.header(t("library"), t("Models"),
-                                    t("GGUF files found in your model folders"))
-            actions = page_head.actions
+        self._chip_bg = c["surface_hi"]
+        pad = 0
+        actions = actions_parent
         self._add_btn = PillButton(actions, c, t("Add folder"),
                                    command=self._add_folder)
         self._add_btn.pack(side="left", padx=(0, 8))

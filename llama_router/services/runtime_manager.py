@@ -84,7 +84,7 @@ class RuntimeManager:
         self._events = events
         self._runtimes: dict[str, RuntimeEntry] = {}
         self._install_locks: dict[str, threading.Lock] = {}
-        downloads.set_completion_handler("runtime", self._complete_download)
+        downloads.set_completion_handler(self._complete_download)
 
     # ── Public API ───────────────────────────────────────────────────────────
 
@@ -176,13 +176,11 @@ class RuntimeManager:
                   "expected": len(components)}
         item = self._downloads.start_runtime(
             asset["url"], asset["name"], str(self._paths.runtime_dir),
-            on_complete=self._complete_download,
             meta={**common, "component": "runtime"})
 
         if cudart:
             self._downloads.start_runtime(
                 cudart["url"], cudart["name"], str(self._paths.runtime_dir),
-                on_complete=self._complete_download,
                 meta={**common, "component": "cudart"})
         return item
 

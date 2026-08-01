@@ -80,10 +80,6 @@ class WinTray:
         self._ready.wait(timeout=3)
         return self._shown
 
-    def set_running(self, running: bool) -> None:
-        """Refresh the tray mark when the managed server changes state."""
-        self.set_server_status("running" if running else "stopped")
-
     def set_server_status(self, status: str) -> None:
         """Update icon and context-menu availability from server status."""
         status = getattr(status, "value", status)

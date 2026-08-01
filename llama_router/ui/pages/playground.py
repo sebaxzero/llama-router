@@ -84,7 +84,7 @@ class PlaygroundPage(Page):
 
         # Keep the composer outside the page scroller: it must remain usable
         # while a long transcript, banner, or system prompt is being viewed.
-        self._composer = composer = tk.Frame(self, bg=c["bg"])
+        composer = tk.Frame(self, bg=c["bg"])
         composer.pack(side="bottom", fill="x")
 
         # The history and auxiliary controls may scroll in a short window.
@@ -653,11 +653,6 @@ class PlaygroundPage(Page):
             Path(path).write_text(text, encoding="utf-8")
         except OSError as e:
             messagebox.showwarning(t("Export failed"), str(e), parent=self)
-
-    # ── System prompt ────────────────────────────────────────────────────────
-
-    def _toggle_system(self) -> None:
-        self._sys_card.toggle()
 
     # ── Theme-flip state ─────────────────────────────────────────────────────
 

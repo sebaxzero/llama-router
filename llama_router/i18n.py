@@ -39,9 +39,6 @@ CATALOGS: dict[str, dict[str, str]] = {
         "model": "modelo",
         "profile": "perfil",
         "local": "local",
-        "Preparing interface… {done}/{total}":
-            "Preparando interfaz… {done}/{total}",
-        "Interface ready": "Interfaz lista",
         "a control panel for llama.cpp": "panel de control para llama.cpp",
         "Active runtime and routes available to llama-server.":
             "Runtime activo y rutas disponibles para llama-server.",
@@ -49,15 +46,10 @@ CATALOGS: dict[str, dict[str, str]] = {
 
         # ── Page eyebrows / placeholders ─────────────────────────────────────
         "panel": "panel",
-        "library": "biblioteca",
-        "inference presets": "ajustes de inferencia",
         "llama.cpp builds": "builds de llama.cpp",
-        "llama-server process": "proceso llama-server",
         "configuration": "configuración",
 
         # ── Models ───────────────────────────────────────────────────────────
-        "GGUF files found in your model folders":
-            "Archivos GGUF encontrados en tus carpetas de modelos",
         "Add folder": "Añadir carpeta",
         "Scan folders": "Escanear carpetas",
         "Scanning…": "Escaneando…",
@@ -78,15 +70,12 @@ CATALOGS: dict[str, dict[str, str]] = {
             "Aún no hay modelos.\nDeja archivos GGUF en una carpeta y escanea.",
 
         # ── Profiles ─────────────────────────────────────────────────────────
-        "Each active profile becomes a route on the server":
-            "Cada perfil activo se convierte en una ruta del servidor",
         "Model": "Modelo",
         "New": "Nuevo",
         "Delete": "Eliminar",
         "Profile": "Perfil",
         "Parameters": "Parámetros",
         "Reset": "Restablecer",
-        "Save profile": "Guardar perfil",
         "Reset profile": "Restablecer perfil",
         "Restore the default parameters while keeping the profile name and route alias.":
             "Restaura los parámetros predeterminados y conserva el nombre y el alias de ruta.",
@@ -94,12 +83,8 @@ CATALOGS: dict[str, dict[str, str]] = {
             "¿Restaurar los parámetros predeterminados de este perfil?",
         "Saved automatically": "Guardado automático",
         "Saving…": "Guardando…",
-        "Back to profiles": "Volver a perfiles",
         "New session": "Nueva sesión",
-        "Model library": "Biblioteca de modelos",
         "Advanced parameters": "Parámetros avanzados",
-        "Show editor": "Mostrar editor",
-        "Hide editor": "Ocultar editor",
         "Route alias": "Alias de ruta",
         "Context size": "Tamaño de contexto",
         "GPU layers": "Capas en GPU",
@@ -170,9 +155,6 @@ CATALOGS: dict[str, dict[str, str]] = {
         "Full SWA cache": "Caché SWA completa",
         "Keep KV cache on CPU": "Mantener caché KV en CPU",
         "Disable prompt cache": "Desactivar caché de prompt",
-        "Lock model in RAM": "Bloquear modelo en RAM",
-        "Disable mmap": "Desactivar mmap",
-        "MoE experts on CPU": "Expertos MoE en CPU",
         "Auto-fit to VRAM": "Auto-ajustar a VRAM",
         "Fit target (MiB)": "Objetivo de ajuste (MiB)",
         "MMProj file": "Archivo MMProj",
@@ -239,7 +221,6 @@ CATALOGS: dict[str, dict[str, str]] = {
         "Appearance": "Apariencia",
         "Theme applies instantly and is saved automatically":
             "El tema se aplica al instante y se guarda automáticamente",
-        "Save changes": "Guardar cambios",
         "Saved ✓": "Guardado ✓",
         "disabled": "deshabilitado",
         "Max tokens": "Tokens máximos",
@@ -259,9 +240,6 @@ CATALOGS: dict[str, dict[str, str]] = {
         "Copy params from…": "Copiar parámetros de…",
 
         # ── Preset page ──────────────────────────────────────────────────────
-        "source of truth": "fuente de la verdad",
-        "What llama-server actually loads — regenerated on every change":
-            "Lo que llama-server carga realmente — se regenera con cada cambio",
         "Reload": "Recargar",
         "Save file": "Guardar archivo",
         "edited — save or reload": "editado — guarda o recarga",
@@ -308,27 +286,17 @@ CATALOGS: dict[str, dict[str, str]] = {
         "Start server": "Iniciar servidor",
         "Port unavailable": "Puerto no disponible",
         "Stop": "Detener",
-        "Install a runtime and add models before starting.":
-            "Instala un runtime y añade modelos para poder iniciar.",
         "Connect your client": "Conecta tu cliente",
         "Examples": "Ejemplos",
         "Hide examples": "Ocultar ejemplos",
         "Configured (hidden)": "Configurada (oculta)",
         "Not configured": "No configurada",
-        "Client connection guide": "Guía de conexión de clientes",
-        "Copy example": "Copiar ejemplo",
-        "Use an active profile's route alias as the model name.":
-            "Usa el alias de ruta de un perfil activo como nombre del modelo.",
         "LAN access uses this computer's current address. Allow the port through the firewall.":
             "El acceso LAN usa la dirección actual de este equipo. Permite el puerto en el firewall.",
         "Local access only. Choose Local network in Settings to connect from another device.":
             "Solo acceso local. Elige Red local en Ajustes para conectar desde otro dispositivo.",
         "Saved network changes apply after restarting the server.":
             "Los cambios de red guardados se aplican después de reiniciar el servidor.",
-        "API key is enabled; replace YOUR_API_KEY with the configured key.":
-            "La clave de API está habilitada; usa tu clave en lugar de YOUR_API_KEY.",
-        "No API key is configured. Set one before exposing the server to a network.":
-            "No hay una clave de API configurada. Define una antes de exponer el servidor a una red.",
         "Copy": "Copiar",
         "Export logs": "Exportar logs",
         "Log files": "Archivos de log",
@@ -338,13 +306,9 @@ CATALOGS: dict[str, dict[str, str]] = {
         "Hide": "Ocultar",
         "Generate": "Generar",
         "Copied": "Copiado",
-        "Copied ✓": "Copiado ✓",
-        "OpenAI-compatible API — works with any standard client.":
-            "API compatible con OpenAI — funciona con cualquier cliente estándar.",
         "System": "Sistema",
         "none": "ninguno",
         "First steps": "Primeros pasos",
-        "Serving at {url}": "Sirviendo en {url}",
         "Download a runtime": "Descarga un runtime",
         "pick a llama.cpp build in Runtime": "elige un build de llama.cpp en Runtime",
         "Add your models": "Añade tus modelos",

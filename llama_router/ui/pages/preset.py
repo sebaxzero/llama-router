@@ -10,31 +10,20 @@ from llama_router.i18n import t
 from llama_router.preset import parse_profile_params, strip_disabled_sections
 from llama_router.core.storage import write_text
 from llama_router.ui import theme
-from llama_router.ui.pages.base import PAGE_PAD, Page
+from llama_router.ui.pages.base import Page
 from llama_router.ui.widgets import PillButton
 
 
 class PresetPage(Page):
-    def __init__(self, parent: tk.Widget, ctx, embedded: bool = False,
-                 actions_parent: tk.Widget | None = None) -> None:
+    def __init__(self, parent: tk.Widget, ctx,
+                 actions_parent: tk.Widget) -> None:
         super().__init__(parent, ctx)
-        self._embedded = embedded
         self._external_dirty = False
         c = self.c
-        body_bg = c["surface"] if embedded else c["bg"]
+        body_bg = c["surface"]
         self.configure(bg=body_bg)
-        pad = 0 if embedded else PAGE_PAD
-        if embedded:
-            if actions_parent is None:
-                actions = tk.Frame(self, bg=body_bg)
-                actions.pack(fill="x", pady=(0, 10))
-            else:
-                actions = actions_parent
-        else:
-            head = self.header(
-                t("source of truth"), "models-preset.ini",
-                t("What llama-server actually loads — regenerated on every change"))
-            actions = head.actions
+        pad = 0
+        actions = actions_parent
         self._reload_btn = PillButton(actions, c, t("Reload"),
                                       command=self._reload)
         self._reload_btn.pack(side="left", padx=(0, 8))
@@ -59,7 +48,7 @@ class PresetPage(Page):
                              padx=10, pady=8, font=theme.mono(9), wrap="none",
                              insertbackground=c["text"], undo=True,
                              highlightthickness=0,
-                             height=14 if embedded else 24)
+                             height=14)
         vbar = ttk.Scrollbar(panel, orient="vertical", command=self._text.yview)
         hbar = ttk.Scrollbar(panel, orient="horizontal",
                              command=self._text.xview)
@@ -145,7 +134,7 @@ class PresetPage(Page):
             text=t("edited — save or reload") if dirty else "")
 
     def _on_external_change(self, _data=None) -> None:
-        if self._embedded and not self.winfo_ismapped():
+        if not self.winfo_ismapped():
             self._external_dirty = True
             return
         if not self._dirty:
@@ -157,7 +146,7 @@ class PresetPage(Page):
             self._reload()
 
     def on_show(self) -> None:
-        if self._embedded and not self.winfo_ismapped():
+        if not self.winfo_ismapped():
             return
         if not self._dirty:
             self._reload()

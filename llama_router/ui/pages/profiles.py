@@ -415,7 +415,6 @@ class ProfilesPage(Page):
         profile_stack.columnconfigure(0, weight=1)
         profile_stack.rowconfigure(0, weight=0)
         profile_stack.rowconfigure(1, weight=1)
-        self._profile_cols = profile_stack
 
         self._active_profiles_card = CollapsibleCard(
             profile_stack, c, t("Models"), expanded=True, pad=12,
@@ -439,7 +438,6 @@ class ProfilesPage(Page):
             self._ensure_preset_view()
 
         # ── Models ───────────────────────────────────────────────────────────
-        self._profile_list = self._active_profiles_card
         active_content = self._active_profiles_card.content
 
         treepanel = tk.Frame(active_content, bg=c["surface"])
@@ -498,7 +496,7 @@ class ProfilesPage(Page):
         if self._library_view is not None:
             return
         self._library_view = ModelsPage(
-            self._models_card.content, self.ctx, embedded=True,
+            self._models_card.content, self.ctx,
             actions_parent=self._models_card.actions)
         self._library_view.pack(fill="x")
 
@@ -513,7 +511,7 @@ class ProfilesPage(Page):
         if self._preset_view is not None:
             return
         self._preset_view = PresetPage(
-            self._preset_card.content, self.ctx, embedded=True,
+            self._preset_card.content, self.ctx,
             actions_parent=self._preset_card.actions)
         self._preset_view.pack(fill="x")
         self._bind_outer_scroll(self._preset_view._text)

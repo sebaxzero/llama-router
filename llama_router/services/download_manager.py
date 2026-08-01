@@ -59,10 +59,9 @@ class DownloadManager:
     def __init__(self, paths: PathManager, config: ConfigManager,
                  events: EventBus) -> None:
         self._paths = paths
-        self._config = config
         self._events = events
         self._items: dict[str, DownloadItem] = {}
-        self._completion_handlers: dict[str, Callable[[DownloadItem], None]] = {}
+        self._completion_handler: Callable[[DownloadItem], None] | None = None
         self._limit = max(1, config.get().max_concurrent_downloads)
         self._active = 0
         self._limit_cv = threading.Condition()
@@ -87,7 +86,7 @@ class DownloadManager:
                 item = DownloadItem.from_dict(d)
             except Exception:
                 continue
-            handler = self._completion_handlers.get(item.kind)
+            handler = self._completion_handler
             destination = Path(item.destination)
             if destination.is_file():
                 item.total_bytes = max(item.total_bytes, destination.stat().st_size)
@@ -131,10 +130,9 @@ class DownloadManager:
                             url=url, destination=dest, meta=meta or {})
         return self._enqueue(item, on_complete)
 
-    def set_completion_handler(
-            self, kind: str, handler: Callable[[DownloadItem], None]) -> None:
+    def set_completion_handler(self, handler: Callable[[DownloadItem], None]) -> None:
         """Register the durable post-download handler used after a restart."""
-        self._completion_handlers[kind] = handler
+        self._completion_handler = handler
 
     def close(self, timeout: float = 5.0) -> None:
         """Stop workers promptly and leave unfinished items queued for resume."""
@@ -285,7 +283,7 @@ class DownloadManager:
             if self._shutdown.is_set():
                 self._pause(item)
                 return
-            handler = on_complete or self._completion_handlers.get(item.kind)
+            handler = on_complete or self._completion_handler
             if handler is not None:
                 try:
                     handler(item)

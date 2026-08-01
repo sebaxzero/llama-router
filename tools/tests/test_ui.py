@@ -27,7 +27,6 @@ from llama_router.services.server_manager import ServerManager
 from llama_router.schemas import ModelEntry
 from llama_router.ui import theme
 from llama_router.ui.app import App, AppContext, PAGES
-from llama_router.ui.pages.settings import SettingsPage
 from llama_router.ui.widgets import NavItem, PageHeader, PillButton, ScrollFrame
 
 
