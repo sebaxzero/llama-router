@@ -45,6 +45,10 @@ class _StallError(Exception):
     _STALL_WINDOW — typical of a degraded CDN connection that never drops."""
 
 
+class _Shutdown(Exception):
+    """Internal signal used to pause a worker during application shutdown."""
+
+
 def _http_text(url: str, headers: dict | None = None, timeout: float = 15) -> str:
     req = urllib.request.Request(url, headers={**_UA, **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -62,6 +66,14 @@ class DownloadManager:
         self._limit = max(1, config.get().max_concurrent_downloads)
         self._active = 0
         self._limit_cv = threading.Condition()
+        self._threads: set[threading.Thread] = set()
+        self._close_lock = threading.Lock()
+        self._persist_lock = threading.Lock()
+        self._io_lock = threading.Lock()
+        self._responses: set = set()
+        self._response_lock = threading.Lock()
+        self._shutdown = threading.Event()
+        self._closed = False
         events.subscribe("config_saved", self._on_config_saved)
 
     # ── Public API ───────────────────────────────────────────────────────────
@@ -75,12 +87,28 @@ class DownloadManager:
                 item = DownloadItem.from_dict(d)
             except Exception:
                 continue
-            if Path(item.destination).exists():
-                continue  # finished after the last persist
+            handler = self._completion_handlers.get(item.kind)
+            destination = Path(item.destination)
+            if destination.is_file():
+                item.total_bytes = max(item.total_bytes, destination.stat().st_size)
+                item.downloaded_bytes = item.total_bytes
+                item.speed_bps = 0.0
+                item.error = ""
+                if handler is None:
+                    # There is no durable post-processing step for this kind;
+                    # the archive itself is the complete result.
+                    self._items[item.id] = item
+                    self._complete(item)
+                else:
+                    item.state = DownloadState.QUEUED
+                    self._enqueue(item, handler, post_process=True)
+                    resumed += 1
+                continue
             item.state = DownloadState.QUEUED
             item.downloaded_bytes = 0
             item.speed_bps = 0.0
-            self._enqueue(item, self._completion_handlers.get(item.kind))
+            item.error = ""
+            self._enqueue(item, handler)
             resumed += 1
         if resumed:
             log.info("Resumed %d interrupted download(s)", resumed)
@@ -107,6 +135,44 @@ class DownloadManager:
             self, kind: str, handler: Callable[[DownloadItem], None]) -> None:
         """Register the durable post-download handler used after a restart."""
         self._completion_handlers[kind] = handler
+
+    def close(self, timeout: float = 5.0) -> None:
+        """Stop workers promptly and leave unfinished items queued for resume."""
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+        self._shutdown.set()
+        self._events.unsubscribe("config_saved", self._on_config_saved)
+        with self._limit_cv:
+            self._limit_cv.notify_all()
+            threads = list(self._threads)
+        with self._response_lock:
+            responses = list(self._responses)
+        for response in responses:
+            try:
+                response.close()
+            except Exception:
+                pass
+
+        deadline = time.monotonic() + max(0.0, timeout)
+        current = threading.current_thread()
+        for thread in threads:
+            if thread is current:
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            thread.join(remaining)
+
+        with self._limit_cv:
+            unfinished = list(self._threads)
+        for item in list(self._items.values()):
+            if item.state in (DownloadState.QUEUED, DownloadState.DOWNLOADING):
+                self._pause(item)
+        if unfinished:
+            log.warning("%d download worker(s) did not stop before shutdown",
+                        len(unfinished))
 
     # ── GitHub helpers (blocking — call from a worker thread) ────────────────
 
@@ -141,61 +207,108 @@ class DownloadManager:
 
     # ── Internals ────────────────────────────────────────────────────────────
 
-    def _persist(self) -> None:
+    def _persist(self, *, exclude_id: str | None = None) -> None:
         """Save pending items so an app restart can resume them. Progress bytes
         aren't persisted — resume position comes from the .part file."""
+        with self._persist_lock:
+            self._persist_locked(exclude_id=exclude_id)
+
+    def _persist_locked(self, *, exclude_id: str | None = None) -> None:
         pending = [
             i.to_dict() for i in self._items.values()
-            if i.state in (DownloadState.QUEUED, DownloadState.DOWNLOADING)
+            if i.id != exclude_id
+            and i.state in (DownloadState.QUEUED, DownloadState.DOWNLOADING)
         ]
         try:
             db_write(self._paths.db_path, "downloads", pending)
         except Exception:
             log.debug("Could not persist download queue", exc_info=True)
 
-    def _enqueue(self, item: DownloadItem,
-                 on_complete: Callable[[DownloadItem], None] | None = None
-                 ) -> DownloadItem:
+    def _enqueue(
+            self, item: DownloadItem,
+            on_complete: Callable[[DownloadItem], None] | None = None,
+            *, post_process: bool = False) -> DownloadItem:
         self._items[item.id] = item
-        th = threading.Thread(target=self._run, args=(item.id, on_complete),
+        if self._shutdown.is_set():
+            self._emit(item)
+            return item
+        th = threading.Thread(target=self._run,
+                              args=(item.id, on_complete, post_process),
                               daemon=True, name=f"dl-{item.id}")
+        with self._limit_cv:
+            self._threads.add(th)
         self._persist()
         self._emit(item)
-        th.start()
+        try:
+            th.start()
+        except Exception:
+            with self._limit_cv:
+                self._threads.discard(th)
+            raise
         return item
 
     def _run(self, dl_id: str,
-             on_complete: Callable[[DownloadItem], None] | None) -> None:
-        self._acquire_slot()
+             on_complete: Callable[[DownloadItem], None] | None,
+             post_process: bool = False) -> None:
+        item = None
+        acquired = False
         try:
+            if not self._acquire_slot():
+                return
+            acquired = True
             item = self._items.get(dl_id)
-            if not item:
+            if not item or self._shutdown.is_set():
+                if item:
+                    self._pause(item)
                 return
             item.state = DownloadState.DOWNLOADING
+            item.error = ""
             log.info("Download started: %s (%s)", item.name, item.kind)
             self._emit(item)
             try:
-                self._download(item)
+                if not post_process:
+                    self._download(item)
+            except _Shutdown:
+                self._pause(item)
+                return
             except Exception as e:
+                if self._shutdown.is_set():
+                    self._pause(item)
+                    return
                 log.error("Download %s failed: %s", dl_id, e)
                 item.state = DownloadState.FAILED
                 item.error = str(e)
                 self._persist()
                 self._emit(item)
                 return
-        finally:
-            self._release_slot()
 
-        if on_complete is not None:
-            try:
-                on_complete(item)
-            except Exception as e:
-                log.error("Post-download step failed for %s: %s", item.name, e)
-                item.state = DownloadState.FAILED
-                item.error = str(e)
-                self._emit(item)
+            if self._shutdown.is_set():
+                self._pause(item)
                 return
-        self._events.publish("download_complete", item.to_dict())
+            handler = on_complete or self._completion_handlers.get(item.kind)
+            if handler is not None:
+                try:
+                    handler(item)
+                except Exception as e:
+                    if self._shutdown.is_set():
+                        self._pause(item)
+                        return
+                    log.error("Post-download step failed for %s: %s",
+                              item.name, e)
+                    # The archive is already safe on disk. Keep it queued so
+                    # the durable handler can retry after the next launch.
+                    item.state = DownloadState.QUEUED
+                    item.error = str(e)
+                    self._persist()
+                    self._emit(item)
+                    return
+            self._complete(item)
+        finally:
+            if acquired:
+                self._release_slot()
+            with self._limit_cv:
+                self._threads.discard(threading.current_thread())
+                self._limit_cv.notify_all()
 
     def _on_config_saved(self, data: dict) -> None:
         limit = max(1, int((data or {}).get("max_concurrent_downloads", 1)))
@@ -203,22 +316,34 @@ class DownloadManager:
             self._limit = limit
             self._limit_cv.notify_all()
 
-    def _acquire_slot(self) -> None:
+    def _acquire_slot(self) -> bool:
         with self._limit_cv:
-            while self._active >= self._limit:
+            while self._active >= self._limit and not self._shutdown.is_set():
                 self._limit_cv.wait()
+            if self._shutdown.is_set():
+                return False
             self._active += 1
+            return True
 
     def _release_slot(self) -> None:
         with self._limit_cv:
             self._active -= 1
             self._limit_cv.notify_all()
 
+    def _pause(self, item: DownloadItem) -> None:
+        item.state = DownloadState.QUEUED
+        item.speed_bps = 0.0
+        item.error = ""
+        self._persist()
+        self._emit(item)
+
     def _download(self, item: DownloadItem) -> None:
         _retryable = (TimeoutError, ConnectionError, _StallError,
                       urllib.error.URLError, OSError)
         attempt = 0
         while True:
+            if self._shutdown.is_set():
+                raise _Shutdown
             before = item.downloaded_bytes
             try:
                 self._attempt_download(item)
@@ -240,9 +365,11 @@ class DownloadManager:
                             item.id, e, attempt, _MAX_RETRIES, wait)
                 item.speed_bps = 0.0
                 self._emit(item)
-                time.sleep(wait)
+                if self._shutdown.wait(wait):
+                    raise _Shutdown
 
     def _attempt_download(self, item: DownloadItem) -> None:
+        self._check_shutdown()
         dest = Path(item.destination)
         dest.parent.mkdir(parents=True, exist_ok=True)
         part = Path(str(dest) + ".part")
@@ -254,61 +381,93 @@ class DownloadManager:
 
         req = urllib.request.Request(item.url, headers=headers)
         with urllib.request.urlopen(req, timeout=30) as resp:
-            content_length = int(resp.headers.get("Content-Length") or 0)
-            content_range = resp.headers.get("Content-Range")
-            if content_range:
-                total = int(content_range.split("/")[-1])
-            else:
-                total = resume_from + content_length
-                if resume_from and resp.status == 200:
-                    # Server ignored Range — starting over
-                    resume_from = 0
-                    total = content_length
-            item.total_bytes = total
+            with self._response_lock:
+                self._responses.add(resp)
+            try:
+                self._check_shutdown()
+                content_length = int(resp.headers.get("Content-Length") or 0)
+                content_range = resp.headers.get("Content-Range")
+                if content_range:
+                    total = int(content_range.split("/")[-1])
+                else:
+                    total = resume_from + content_length
+                    if resume_from and resp.status == 200:
+                        # Server ignored Range — starting over
+                        resume_from = 0
+                        total = content_length
+                item.total_bytes = total
 
-            downloaded = resume_from
-            last_ts = time.monotonic()
-            last_bytes = downloaded
-            window_ts = last_ts
-            window_bytes = downloaded
+                downloaded = resume_from
+                last_ts = time.monotonic()
+                last_bytes = downloaded
+                window_ts = last_ts
+                window_bytes = downloaded
 
-            mode = "ab" if resume_from else "wb"
-            with open(part, mode) as f:
-                while True:
-                    chunk = resp.read(_CHUNK)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    item.downloaded_bytes = downloaded
+                mode = "ab" if resume_from else "wb"
+                self._check_shutdown()
+                with open(part, mode) as f:
+                    while True:
+                        self._check_shutdown()
+                        chunk = resp.read(_CHUNK)
+                        if not chunk:
+                            break
+                        with self._io_lock:
+                            self._check_shutdown()
+                            f.write(chunk)
+                        downloaded += len(chunk)
+                        item.downloaded_bytes = downloaded
 
-                    now = time.monotonic()
-                    if now - window_ts >= _STALL_WINDOW:
-                        if (downloaded - window_bytes) / (now - window_ts) < _STALL_MIN_BPS:
-                            raise _StallError(
-                                f"below {_STALL_MIN_BPS // 1024} KB/s "
-                                f"for {int(_STALL_WINDOW)}s")
-                        window_ts = now
-                        window_bytes = downloaded
-                    if now - last_ts >= _PROGRESS_INTERVAL:
-                        item.speed_bps = (downloaded - last_bytes) / (now - last_ts)
-                        last_ts = now
-                        last_bytes = downloaded
-                        self._emit(item)
+                        now = time.monotonic()
+                        if now - window_ts >= _STALL_WINDOW:
+                            if (downloaded - window_bytes) / (now - window_ts) < _STALL_MIN_BPS:
+                                raise _StallError(
+                                    f"below {_STALL_MIN_BPS // 1024} KB/s "
+                                    f"for {int(_STALL_WINDOW)}s")
+                            window_ts = now
+                            window_bytes = downloaded
+                        if now - last_ts >= _PROGRESS_INTERVAL:
+                            item.speed_bps = (downloaded - last_bytes) / (now - last_ts)
+                            last_ts = now
+                            last_bytes = downloaded
+                            self._emit(item)
+            finally:
+                with self._response_lock:
+                    self._responses.discard(resp)
 
         self._finalise(item)
+
+    def _check_shutdown(self) -> None:
+        if self._shutdown.is_set():
+            raise _Shutdown
 
     def _finalise(self, item: DownloadItem) -> None:
         dest = Path(item.destination)
         part = Path(str(dest) + ".part")
-        if part.exists():
-            part.replace(dest)
-        item.state = DownloadState.COMPLETED
-        item.downloaded_bytes = max(item.total_bytes, item.downloaded_bytes)
-        item.speed_bps = 0.0
+        with self._io_lock:
+            self._check_shutdown()
+            if part.exists():
+                part.replace(dest)
+            item.downloaded_bytes = max(item.total_bytes, item.downloaded_bytes)
+            item.speed_bps = 0.0
+            # Keep the queue record until the durable post-processing handler
+            # has succeeded; shutdown can happen in this exact window.
+            log.info("Download archive ready: %s", item.name)
+            self._persist()
+            self._emit(item)
+
+    def _complete(self, item: DownloadItem) -> None:
+        with self._persist_lock:
+            item.downloaded_bytes = max(item.total_bytes, item.downloaded_bytes)
+            item.speed_bps = 0.0
+            item.error = ""
+            # Keep the item out of the durable snapshot, then expose
+            # COMPLETED while holding the same lock so another worker cannot
+            # rewrite it as pending after cleanup.
+            self._persist_locked(exclude_id=item.id)
+            item.state = DownloadState.COMPLETED
         log.info("Download completed: %s", item.name)
-        self._persist()
         self._emit(item)
+        self._events.publish("download_complete", item.to_dict())
 
     def _emit(self, item: DownloadItem) -> None:
         self._events.publish("download_progress", item.to_dict())

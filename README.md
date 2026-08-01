@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <strong>A desktop control panel for <a href="https://github.com/ggerganov/llama.cpp">llama.cpp</a> servers.</strong><br>
+  <strong>A desktop control panel for <a href="https://github.com/ggml-org/llama.cpp">llama.cpp</a> servers.</strong><br>
   Manage local GGUF models with a native Python + Tkinter application.
 </p>
 
@@ -47,7 +47,7 @@ launch.bat
 Or invoke it directly with `py -3 main.py` on Windows or `python3 main.py` elsewhere. Then:
 
 1. Open **Runtime**, choose a prebuilt build appropriate for your hardware, and click **Install**. You can instead import an existing `llama-server` build.
-2. Open **Models & Profiles**, add folders containing `.gguf` files, and click **Scan**.
+2. Open **Models**, add folders containing `.gguf` files, and click **Scan**.
 3. Enable a model and configure its route: context size, GPU layers, sampling, speculative decoding, and other `llama-server` options.
 4. Open **Dashboard** and click **Start Server**.
 5. Connect an OpenAI-compatible client to `http://127.0.0.1:8080/v1`.
@@ -58,6 +58,10 @@ The app regenerates `config/models-preset.ini` whenever the model registry, prof
 
 - **Python 3.10+** is the only application dependency. On Linux, Tk may be packaged separately: `sudo apt install python3-tk`.
 - **Windows 10/11, Linux, or macOS.** Windows additionally supports notification-area controls and Job Object cleanup.
+
+Developer tools keep their optional dependencies isolated in `tools/.venv`
+(Pillow, imageio-ffmpeg, and PyInstaller); the application itself does not
+need a virtual environment.
 
 ## Data and files
 

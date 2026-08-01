@@ -16,6 +16,11 @@ from llama_router.core.windows import configure_app_identity
 from llama_router.i18n import set_language
 
 
+def _debug_requested(argv: list[str] | None = None) -> bool:
+    """Return whether the application was launched with ``--debug``."""
+    return "--debug" in (sys.argv[1:] if argv is None else argv)
+
+
 def _first_run_base():
     """Frozen first launch: ask where the app should keep its data.
 
@@ -63,6 +68,8 @@ def _first_run_base():
 
 
 def main() -> int:
+    debug = _debug_requested()
+
     # Frozen POSIX builds re-enter this executable as the process supervisor;
     # source runs execute the helper script directly.
     if (sys.platform != "win32" and len(sys.argv) > 1
@@ -123,7 +130,7 @@ def main() -> int:
     atexit.register(instance_guard.release)
     init_db(paths.db_path)
 
-    logging.basicConfig(level=logging.INFO,
+    logging.basicConfig(level=logging.DEBUG if debug else logging.INFO,
                         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
 
     events = EventBus()

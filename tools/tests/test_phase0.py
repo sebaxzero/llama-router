@@ -9,12 +9,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+import main as app_main
 from llama_router.core import storage, utils
 from llama_router.core.events import EventBus
 from llama_router.schemas import (AppConfig, ModelEntry, ModelState, Profile,
                                   ServerSettings)
 from llama_router import preset
 from llama_router.ui.pages.settings import SettingsPage
+
+
+class TestDebugFlag(unittest.TestCase):
+    def test_debug_flag_is_explicit(self):
+        self.assertTrue(app_main._debug_requested(["--debug"]))
+        self.assertTrue(app_main._debug_requested(["--other", "--debug"]))
+        self.assertFalse(app_main._debug_requested([]))
 
 
 class TestStorage(unittest.TestCase):

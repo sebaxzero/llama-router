@@ -22,11 +22,19 @@ class SettingsPage(Page):
         self._layout_id: str | None = None
         self._form_dirty = False
         self._saved_form: dict = {}
+        self._server_built = False
+        self._server_draft: dict | None = None
+        self._common_autosave_wired = False
+        self._server_autosave_wired = False
         self._build()
 
     def _build(self) -> None:
         c = self.c
         self._form_dirty = False
+        self._server_built = False
+        self._server_draft = None
+        self._common_autosave_wired = False
+        self._server_autosave_wired = False
         head = self.header(t("configuration"), t("Settings"))
         self._save_state = tk.Label(head.actions, text=t("Saved automatically"),
                                     bg=c["bg"], fg=c["faint"],
@@ -74,6 +82,8 @@ class SettingsPage(Page):
         self._show_api_details = self._check(
             grid, 4, t("Show API key in dashboard and examples"),
             cfg.show_api_details)
+        self._show_api_details.trace_add(
+            "write", lambda *_: self._apply_api_details_visibility())
         from llama_router.services import tray
         self._tray_var = None
         if tray.is_supported():
@@ -83,54 +93,134 @@ class SettingsPage(Page):
         # ── Server ───────────────────────────────────────────────────────────
         srv_card = CollapsibleCard(body, c, t("Server"),
                                    state_key="settings.server",
+                                   on_toggle=self._on_server_toggle,
                                    accent=c["panel_warn"])
         srv_card.pack(fill="x", padx=PAGE_PAD, pady=(0, 14))
+        self._server_card = srv_card
         reset = PillButton(srv_card.header, c, t("Reset to defaults"), size=9, padx=12,
                            height=28, command=self._reset_server)
         reset.pack(side="right", padx=(0, 6))
-
-        s = cfg.server
-        grid2 = self._grid(srv_card.content, two_columns=True)
-        self._server_grid = grid2
+        self._server_grid = None
         self._server_compact: bool | None = None
-        grid2.bind("<Configure>", self._schedule_layout, add="+")
-        self._expose = self._combo(grid2, 0, t("Network exposure"),
-                                   [t("This machine only"), t("Local network"),
-                                    t("Custom host")],
-                                   self._expose_label(s.expose))
-        self._expose.bind("<<ComboboxSelected>>", lambda e: self._sync_host())
-        self._host = self._entry(grid2, 1, t("Host"), s.host)
-        self._port = self._entry(grid2, 2, t("Port"), str(s.port))
-        self._max_models = self._entry(grid2, 3, t("Models in memory"),
-                                       str(s.max_models))
-        self._parallel = self._entry(grid2, 4, t("Parallel slots"),
-                                     str(s.parallel_slots))
-        self._threads = self._entry(grid2, 5, t("CPU threads"),
-                                    str(s.cpu_threads))
-        self._batch_threads = self._entry(grid2, 6, t("Batch CPU threads"),
-                                          str(s.batch_threads))
-        self._api_key_real = s.api_key
-        self._api_key_visible = cfg.show_api_details
-        self._api_key = self._api_key_control(grid2, 7)
-        self._stop_timeout = self._entry(grid2, 8, t("Stop timeout (s)"),
-                                         str(s.stop_timeout))
-        self._cont_batching = self._check(grid2, 9, t("Continuous batching"),
-                                          s.cont_batching)
-        self._models_autoload = self._check(grid2, 10, t("Autoload models"),
-                                            s.models_autoload)
-        self._metrics = self._check(grid2, 11, t("Prometheus metrics"), s.metrics)
-        self._restart_crash = self._check(grid2, 12, t("Restart on crash"),
-                                          s.restart_on_crash)
-        self._extra = self._entry(grid2, 13, t("Extra arguments"), s.extra_args,
-                                  wide=True)
-        self._show_api_details.trace_add(
-            "write", lambda *_: self._apply_api_details_visibility())
-        self._sync_host()
-        self._schedule_layout()
+        if srv_card.is_open:
+            self._build_server_form()
         self._saved_form = self._serialize()
         self._wire_autosave()
 
         tk.Frame(body, bg=c["bg"], height=PAGE_PAD).pack()
+
+    def _on_server_toggle(self, open_: bool) -> None:
+        if open_:
+            self._build_server_form()
+
+    def _build_server_form(self) -> None:
+        if self._server_built:
+            return
+        cfg = self._config()
+        s = cfg.server
+        grid = self._grid(self._server_card.content, two_columns=True)
+        self._server_grid = grid
+        grid.bind("<Configure>", self._schedule_layout, add="+")
+        self._expose = self._combo(
+            grid, 0, t("Network exposure"),
+            [t("This machine only"), t("Local network"), t("Custom host")],
+            self._expose_label(s.expose))
+        self._expose.bind("<<ComboboxSelected>>", lambda _e: self._sync_host())
+        self._host = self._entry(grid, 1, t("Host"), s.host)
+        self._port = self._entry(grid, 2, t("Port"), str(s.port))
+        self._max_models = self._entry(
+            grid, 3, t("Models in memory"), str(s.max_models))
+        self._parallel = self._entry(
+            grid, 4, t("Parallel slots"), str(s.parallel_slots))
+        self._threads = self._entry(
+            grid, 5, t("CPU threads"), str(s.cpu_threads))
+        self._batch_threads = self._entry(
+            grid, 6, t("Batch CPU threads"), str(s.batch_threads))
+        self._api_key_real = s.api_key
+        self._api_key_visible = cfg.show_api_details
+        self._api_key = self._api_key_control(grid, 7)
+        self._stop_timeout = self._entry(
+            grid, 8, t("Stop timeout (s)"), str(s.stop_timeout))
+        self._cont_batching = self._check(
+            grid, 9, t("Continuous batching"), s.cont_batching)
+        self._models_autoload = self._check(
+            grid, 10, t("Autoload models"), s.models_autoload)
+        self._metrics = self._check(
+            grid, 11, t("Prometheus metrics"), s.metrics)
+        self._restart_crash = self._check(
+            grid, 12, t("Restart on crash"), s.restart_on_crash)
+        self._extra = self._entry(
+            grid, 13, t("Extra arguments"), s.extra_args, wide=True)
+        self._server_built = True
+        draft = self._server_draft
+        if draft:
+            self._restore_server_values(draft)
+            self._server_draft = None
+        else:
+            self._sync_host()
+        self._wire_autosave()
+        self._schedule_layout()
+
+    def _server_values(self) -> dict:
+        cfg = self._config()
+        s = cfg.server
+        values = {
+            "expose": self._expose_label(s.expose),
+            "host": s.host,
+            "port": str(s.port),
+            "max_models": str(s.max_models),
+            "parallel": str(s.parallel_slots),
+            "threads": str(s.cpu_threads),
+            "batch_threads": str(s.batch_threads),
+            "api_key": s.api_key,
+            "stop_timeout": str(s.stop_timeout),
+            "cont_batching": s.cont_batching,
+            "models_autoload": s.models_autoload,
+            "metrics": s.metrics,
+            "restart_crash": s.restart_on_crash,
+            "extra": s.extra_args,
+        }
+        if self._server_built:
+            values.update({
+                "expose": self._expose.get(),
+                "host": self._host.get(),
+                "port": self._port.get(),
+                "max_models": self._max_models.get(),
+                "parallel": self._parallel.get(),
+                "threads": self._threads.get(),
+                "batch_threads": self._batch_threads.get(),
+                "api_key": self._current_api_key(),
+                "stop_timeout": self._stop_timeout.get(),
+                "cont_batching": self._cont_batching.get(),
+                "models_autoload": self._models_autoload.get(),
+                "metrics": self._metrics.get(),
+                "restart_crash": self._restart_crash.get(),
+                "extra": self._extra.get(),
+            })
+        elif self._server_draft:
+            values.update({key: self._server_draft.get(key, value)
+                           for key, value in values.items()})
+        return values
+
+    def _restore_server_values(self, d: dict) -> None:
+        for widget, key in ((self._host, "host"), (self._port, "port"),
+                            (self._max_models, "max_models"),
+                            (self._parallel, "parallel"),
+                            (self._threads, "threads"),
+                            (self._batch_threads, "batch_threads"),
+                            (self._stop_timeout, "stop_timeout"),
+                            (self._extra, "extra")):
+            widget.delete(0, "end")
+            widget.insert(0, d[key])
+        self._expose.set(d["expose"])
+        self._cont_batching.set(d["cont_batching"])
+        self._models_autoload.set(d["models_autoload"])
+        self._metrics.set(d["metrics"])
+        self._restart_crash.set(d["restart_crash"])
+        self._api_key_real = d.get("api_key", "")
+        self._api_key_visible = self._show_api_details.get()
+        self._render_api_key()
+        self._sync_host()
 
     # ── Theme ────────────────────────────────────────────────────────────────
 
@@ -167,28 +257,16 @@ class SettingsPage(Page):
 
     def _serialize(self) -> dict:
         """Capture current field values so a theme flip can't wipe them."""
-        return {
+        form = {
             "language": self._language.get(),
             "autostart": self._autostart.get(),
             "max_dl": self._max_dl.get(),
             "auto_check": self._auto_check.get(),
             "show_api_details": self._show_api_details.get(),
             "tray": self._tray_var.get() if self._tray_var else None,
-            "expose": self._expose.get(),
-            "host": self._host.get(),
-            "port": self._port.get(),
-            "max_models": self._max_models.get(),
-            "parallel": self._parallel.get(),
-            "threads": self._threads.get(),
-            "batch_threads": self._batch_threads.get(),
-            "api_key": self._current_api_key(),
-            "stop_timeout": self._stop_timeout.get(),
-            "cont_batching": self._cont_batching.get(),
-            "models_autoload": self._models_autoload.get(),
-            "metrics": self._metrics.get(),
-            "restart_crash": self._restart_crash.get(),
-            "extra": self._extra.get(),
         }
+        form.update(self._server_values())
+        return form
 
     def _restore(self, d: dict) -> None:
         """Re-apply previously captured field values after a rebuild."""
@@ -196,26 +274,14 @@ class SettingsPage(Page):
         self._autostart.set(d["autostart"])
         self._auto_check.set(d["auto_check"])
         self._show_api_details.set(d.get("show_api_details", False))
+        self._max_dl.delete(0, "end")
+        self._max_dl.insert(0, d["max_dl"])
         if self._tray_var and d.get("tray") is not None:
             self._tray_var.set(d["tray"])
-        self._cont_batching.set(d["cont_batching"])
-        self._models_autoload.set(d["models_autoload"])
-        self._metrics.set(d["metrics"])
-        self._restart_crash.set(d["restart_crash"])
-        self._expose.set(d["expose"])
-        for w, key in ((self._max_dl, "max_dl"),
-                       (self._host, "host"), (self._port, "port"),
-                       (self._max_models, "max_models"),
-                       (self._parallel, "parallel"), (self._threads, "threads"),
-                       (self._batch_threads, "batch_threads"),
-                       (self._stop_timeout, "stop_timeout"),
-                       (self._extra, "extra")):
-            w.delete(0, "end")
-            w.insert(0, d[key])
-        self._api_key_real = d.get("api_key", "")
-        self._api_key_visible = self._show_api_details.get()
-        self._render_api_key()
-        self._sync_host()
+        if self._server_built:
+            self._restore_server_values(d)
+        else:
+            self._server_draft = dict(d)
 
     # ── Form helpers ─────────────────────────────────────────────────────────
 
@@ -262,6 +328,8 @@ class SettingsPage(Page):
 
     def _layout_server_grid(self) -> None:
         grid = self._server_grid
+        if grid is None:
+            return
         width = grid.winfo_width()
         if width <= 1:
             return
@@ -430,8 +498,8 @@ class SettingsPage(Page):
         return {"local": t("This machine only"), "lan": t("Local network"),
                 "custom": t("Custom host")}.get(expose, t("This machine only"))
 
-    def _expose_value(self) -> str:
-        sel = self._expose.get()
+    def _expose_value(self, selection: str | None = None) -> str:
+        sel = selection if selection is not None else self._expose.get()
         if sel == t("Local network"):
             return "lan"
         if sel == t("Custom host"):
@@ -443,23 +511,41 @@ class SettingsPage(Page):
         self._host.configure(state=state)
 
     def _wire_autosave(self) -> None:
-        entries = (self._max_dl, self._host, self._port, self._max_models,
-                   self._parallel, self._threads, self._batch_threads, self._api_key,
-                   self._stop_timeout, self._extra)
-        combos = (self._language, self._expose)
-        variables = (self._autostart, self._auto_check, self._cont_batching,
-                     self._models_autoload, self._metrics, self._restart_crash,
-                     self._show_api_details)
-        if self._tray_var is not None:
-            variables += (self._tray_var,)
-        for entry in entries:
-            entry.bind("<KeyRelease>", lambda _e: self._schedule_save(), add="+")
-            entry.bind("<FocusOut>", lambda _e: self._schedule_save(0), add="+")
-        for combo in combos:
-            combo.bind("<<ComboboxSelected>>",
-                       lambda _e: self._schedule_save(0), add="+")
-        for var in variables:
-            var.trace_add("write", lambda *_: self._schedule_save(0))
+        if not self._common_autosave_wired:
+            entries = (self._max_dl,)
+            combos = (self._language,)
+            variables = (self._autostart, self._auto_check,
+                         self._show_api_details)
+            if self._tray_var is not None:
+                variables += (self._tray_var,)
+            for entry in entries:
+                entry.bind("<KeyRelease>",
+                           lambda _e: self._schedule_save(), add="+")
+                entry.bind("<FocusOut>",
+                           lambda _e: self._schedule_save(0), add="+")
+            for combo in combos:
+                combo.bind("<<ComboboxSelected>>",
+                           lambda _e: self._schedule_save(0), add="+")
+            for var in variables:
+                var.trace_add("write", lambda *_: self._schedule_save(0))
+            self._common_autosave_wired = True
+
+        if self._server_built and not self._server_autosave_wired:
+            entries = (self._host, self._port, self._max_models,
+                       self._parallel, self._threads, self._batch_threads,
+                       self._api_key, self._stop_timeout, self._extra)
+            variables = (self._cont_batching, self._models_autoload,
+                         self._metrics, self._restart_crash)
+            for entry in entries:
+                entry.bind("<KeyRelease>",
+                           lambda _e: self._schedule_save(), add="+")
+                entry.bind("<FocusOut>",
+                           lambda _e: self._schedule_save(0), add="+")
+            self._expose.bind("<<ComboboxSelected>>",
+                              lambda _e: self._schedule_save(0), add="+")
+            for var in variables:
+                var.trace_add("write", lambda *_: self._schedule_save(0))
+            self._server_autosave_wired = True
 
     def _schedule_save(self, delay: int = 650) -> None:
         self._form_dirty = True
@@ -473,10 +559,11 @@ class SettingsPage(Page):
     def _config(self):
         return self.ctx.services["config"].get()
 
-    def _int(self, entry: ttk.Entry, fallback: int, lo: int = 0,
+    def _int(self, entry: ttk.Entry | str, fallback: int, lo: int = 0,
              hi: int = 1 << 16) -> int:
         try:
-            v = int(entry.get().strip())
+            raw = entry if isinstance(entry, str) else entry.get()
+            v = int(raw.strip())
             return v if lo <= v <= hi else fallback
         except ValueError:
             return fallback
@@ -495,6 +582,7 @@ class SettingsPage(Page):
         previous_language = cfg.language
         lang_code = {v: k for k, v in LANGUAGES.items()}.get(
             self._language.get(), "en")
+        server = self._server_values()
         patch = {
             "language": lang_code,
             "autostart_server": self._autostart.get(),
@@ -504,25 +592,25 @@ class SettingsPage(Page):
             "auto_check_releases": self._auto_check.get(),
             "show_api_details": self._show_api_details.get(),
             "server": {
-                "expose": self._expose_value(),
-                "host": self._host.get().strip() or "127.0.0.1",
-                "port": self._int(self._port, cfg.server.port, 1, 65535),
-                "max_models": self._int(self._max_models,
+                "expose": self._expose_value(server["expose"]),
+                "host": server["host"].strip() or "127.0.0.1",
+                "port": self._int(server["port"], cfg.server.port, 1, 65535),
+                "max_models": self._int(server["max_models"],
                                         cfg.server.max_models, 1, 64),
-                "parallel_slots": self._int(self._parallel,
+                "parallel_slots": self._int(server["parallel"],
                                             cfg.server.parallel_slots, 1, 128),
-                "cpu_threads": self._int(self._threads,
+                "cpu_threads": self._int(server["threads"],
                                          cfg.server.cpu_threads, 1, 256),
-                "batch_threads": self._int(self._batch_threads,
+                "batch_threads": self._int(server["batch_threads"],
                                             cfg.server.batch_threads, 1, 256),
-                "api_key": self._current_api_key(),
-                "stop_timeout": self._int(self._stop_timeout,
+                "api_key": server["api_key"],
+                "stop_timeout": self._int(server["stop_timeout"],
                                           cfg.server.stop_timeout, 1, 300),
-                "cont_batching": self._cont_batching.get(),
-                "models_autoload": self._models_autoload.get(),
-                "metrics": self._metrics.get(),
-                "restart_on_crash": self._restart_crash.get(),
-                "extra_args": self._extra.get().strip(),
+                "cont_batching": server["cont_batching"],
+                "models_autoload": server["models_autoload"],
+                "metrics": server["metrics"],
+                "restart_on_crash": server["restart_crash"],
+                "extra_args": server["extra"].strip(),
             },
         }
         if self._tray_var is not None:
@@ -542,6 +630,7 @@ class SettingsPage(Page):
             self.after_cancel(self._autosave_id)
             self._autosave_id = None
         self.ctx.services["config"].reset_server()
+        self._server_draft = None
         for w in self.winfo_children():
             w.destroy()
         self._build()

@@ -266,6 +266,8 @@ def _pick(families: set[str], *candidates: str) -> str | None:
 def init_fonts(root: tk.Tk) -> None:
     """Resolve the best installed families once. Call after Tk() exists."""
     global _MONO_FAMILY, _UI_FAMILY
+    if _MONO_FAMILY is not None and _UI_FAMILY is not None:
+        return
     fams = set(tkfont.families(root))
     _UI_FAMILY = _pick(fams, "Segoe UI Variable Text", "Segoe UI") or "TkDefaultFont"
     _MONO_FAMILY = _pick(fams, "Cascadia Mono", "Cascadia Code", "Consolas") or "TkFixedFont"

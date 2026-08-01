@@ -11,6 +11,7 @@
 *.bat text eol=crlf
 
 # Config files
+.editorconfig text eol=lf
 *.json text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf

@@ -104,7 +104,9 @@ class TestHealthTransition(unittest.TestCase):
 
     def test_running_transition_publishes_server_status(self):
         httpd = http.server.HTTPServer(("127.0.0.1", 0), _HealthHandler)
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        http_thread = threading.Thread(
+            target=httpd.serve_forever, daemon=True)
+        http_thread.start()
         port = httpd.server_address[1]
         # A live child so the loop's "is our process still alive?" guard passes.
         child = subprocess.Popen([sys.executable, "-c",
@@ -144,6 +146,7 @@ class TestHealthTransition(unittest.TestCase):
             child.wait(timeout=10)
             httpd.shutdown()
             httpd.server_close()
+            http_thread.join(timeout=5)
 
 
 class TestStartValidation(unittest.TestCase):
@@ -170,13 +173,17 @@ class TestStartValidation(unittest.TestCase):
             env = _Env(td).with_runtime().with_model()
             httpd = http.server.ThreadingHTTPServer(
                 ("127.0.0.1", 0), http.server.BaseHTTPRequestHandler)
-            threading.Thread(target=httpd.serve_forever, daemon=True).start()
+            http_thread = threading.Thread(
+                target=httpd.serve_forever, daemon=True)
+            http_thread.start()
             try:
                 env.config.update(
                     {"server": {"port": httpd.server_address[1]}})
                 self.assertEqual(env.server.start()["reason"], "port_in_use")
             finally:
                 httpd.shutdown()
+                httpd.server_close()
+                http_thread.join(timeout=5)
 
 
 class TestBuildCmd(unittest.TestCase):

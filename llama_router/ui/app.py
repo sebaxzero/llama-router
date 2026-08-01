@@ -64,11 +64,11 @@ class AppContext:
 # nav key → (label key, page class).
 # Labels are English catalog keys; t() resolves them when the rail is built.
 PAGES: dict[str, tuple[str, type]] = {
-    "dashboard":  ("Dashboard",  DashboardPage),
+    "dashboard": ("Dashboard", DashboardPage),
     "playground": ("Playground", PlaygroundPage),
-    "profiles":  ("Models",          ProfilesPage),
-    "runtime":   ("Runtime",   RuntimePage),
-    "settings":  ("Settings",  SettingsPage),
+    "profiles": ("Models", ProfilesPage),
+    "runtime": ("Runtime", RuntimePage),
+    "settings": ("Settings", SettingsPage),
 }
 
 class App:
@@ -99,7 +99,7 @@ class App:
         self._prewarm_queue: list[str] = []
         self._page_construct_ms: dict[str, float] = {}
         self._page_on_show_ms: dict[str, float] = {}
-        self._page_first_idle_ms: dict[str, float] = {}
+        self._page_navigation_idle_ms: dict[str, float] = {}
         self._navigation_token = 0
         self._nav_hbar_visible = False
         self._rebuilding = False   # guards resize handlers during theme teardown
@@ -687,7 +687,6 @@ class App:
             self._scroll_nav_item(widget)
         self._reveal_focus(widget)
         try:
-            self.root.update_idletasks()
             widget.focus_set()
         except tk.TclError:
             pass
@@ -697,7 +696,6 @@ class App:
         if (self._closing or self._rebuilding
                 or page_key is not None and page_key != self._active):
             return "break"
-        self.root.update_idletasks()
         actions = [w for w in self._focus_widgets(include_chrome=False)
                    if (getattr(w, "_keyboard_nav", False)
                        and self._is_visible_in_viewport(w))]
@@ -795,16 +793,23 @@ class App:
         self._pages[key] = page
         elapsed_ms = (time.perf_counter() - started) * 1000
         self._page_construct_ms[key] = elapsed_ms
-        log.info("Built %s page: construct=%.1f ms", key, elapsed_ms)
+        log.debug("Built %s page: construct=%.1f ms", key, elapsed_ms)
         return page
 
-    def _record_first_idle(self, key: str, started: float,
-                           token: int) -> None:
+    def _record_navigation_idle(self, key: str, started: float,
+                                token: int) -> None:
         if token != self._navigation_token or self._active != key:
             return
         elapsed_ms = (time.perf_counter() - started) * 1000
-        self._page_first_idle_ms[key] = elapsed_ms
-        log.info("Page %s first idle: %.1f ms", key, elapsed_ms)
+        self._page_navigation_idle_ms[key] = elapsed_ms
+        log.debug("Page %s navigation idle: %.1f ms", key, elapsed_ms)
+
+    def _schedule_navigation_idle(self, key: str, started: float,
+                                  token: int) -> None:
+        """Measure after focus-triggered idle callbacks have also drained."""
+        if token != self._navigation_token or self._active != key:
+            return
+        self._after_idle(self._record_navigation_idle, key, started, token)
 
     def _schedule_prewarm(self, delay: int = 200) -> None:
         self._cancel_prewarm()
@@ -859,6 +864,7 @@ class App:
         self._sb_right = tk.Label(bar, text="", bg=c["bg"], fg=c["faint"],
                                   font=theme.mono(8))
         self._sb_right.pack(side="right", padx=14)
+        self._status_font = tkfont.Font(root=self.root, font=theme.mono(8))
         Tooltip(self._sb_right, c,
                 t("Active runtime and routes available to llama-server."))
 
@@ -898,9 +904,10 @@ class App:
 
         models = self.ctx.services["models"]
         profiles = self.ctx.services["profiles"]
+        grouped = profiles.by_model()
         available = []
         for model in models.list():
-            active = [p for p in profiles.list(model.id) if p.active]
+            active = [p for p in grouped.get(model.id, ()) if p.active]
             if model.enabled and model.state != "missing" and active:
                 available.append((model, active))
         if len(available) == 1:
@@ -932,7 +939,7 @@ class App:
             # detail to disappear in a narrow status bar.
             if width < 900 and len(parts) >= 3:
                 parts[2] = ""
-            font = tkfont.Font(font=theme.mono(8))
+            font = self._status_font
             budget = max(0, width - self._sb_text.winfo_reqwidth() - 72)
             visible = [part for part in parts if part]
             if font.measure("   ".join(visible)) > budget and parts[2]:
@@ -999,11 +1006,11 @@ class App:
             page.on_show()
         on_show_ms = (time.perf_counter() - on_show_started) * 1000
         self._page_on_show_ms[key] = on_show_ms
-        log.info("Page %s on_show: %.1f ms", key, on_show_ms)
-        self._after_idle(self._record_first_idle, key, navigation_started,
-                         navigation_token)
+        log.debug("Page %s on_show: %.1f ms", key, on_show_ms)
         self._after_idle(self._scroll_to_nav, key)
         self._after_idle(self._focus_first_action, key)
+        self._after_idle(self._schedule_navigation_idle, key,
+                         navigation_started, navigation_token)
         self._schedule_prewarm()
 
     def _set_monitoring_active(self, active: bool) -> None:
@@ -1129,6 +1136,18 @@ class App:
         if server is not None:
             try:
                 server.shutdown()
+            except Exception:
+                pass
+        playground = self.ctx.services.get("playground")
+        if playground is not None:
+            try:
+                playground.cancel()
+            except Exception:
+                pass
+        downloads = self.ctx.services.get("downloads")
+        if downloads is not None:
+            try:
+                downloads.close()
             except Exception:
                 pass
         for page in self._pages.values():

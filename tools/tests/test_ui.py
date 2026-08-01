@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import time
 import tkinter as tk
 import unittest
-from unittest import mock
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -323,6 +324,7 @@ class TestAppLayout(_TkTest):
             try:
                 app.show_page("profiles")
                 app._cancel_prewarm()
+                app.root.update_idletasks()
                 page = app._pages["profiles"]
                 with mock.patch.object(models, "list", wraps=models.list) as list_call, \
                         mock.patch.object(profiles, "by_model",
@@ -381,6 +383,104 @@ class TestAppLayout(_TkTest):
                     pass
                 logs.close()
 
+    def test_profiles_restores_an_open_preset_card(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            app, logs = self._build_app(Path(td))
+            app.ctx.collapsible_states["preset-editor"] = True
+            try:
+                app.show_page("profiles")
+                app._cancel_prewarm()
+                app.root.update_idletasks()
+                page = app._pages["profiles"]
+                self.assertTrue(page._preset_card.is_open)
+                self.assertIsNotNone(page._preset_view)
+                self.assertTrue(page._preset_view.winfo_ismapped())
+            finally:
+                if app.root.winfo_exists():
+                    app._on_close()
+                logs.close()
+
+    def test_profile_model_toggle_reads_live_profiles_after_autosave(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            app, logs = self._build_app(Path(td))
+            models = app.ctx.services["models"]
+            profiles = app.ctx.services["profiles"]
+            models._models["live"] = ModelEntry(
+                id="live", name="Live model", path="live.gguf")
+            profile = profiles.create("live", "Default", {})
+            try:
+                app.show_page("profiles")
+                app._cancel_prewarm()
+                page = app._pages["profiles"]
+                profiles.update(profile.id, {"active": True})
+                self.assertFalse(page._profiles_snapshot["live"][0].active)
+                with mock.patch.object(page._tree, "identify_column",
+                                       return_value="#1"), \
+                        mock.patch.object(page._tree, "identify_row",
+                                           return_value="m:live"):
+                    page._on_tree_click(SimpleNamespace(x=0, y=0))
+                self.assertFalse(profiles.get(profile.id).active)
+            finally:
+                if app.root.winfo_exists():
+                    app._on_close()
+                logs.close()
+
+    def test_dashboard_copy_reads_current_api_key(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            app, logs = self._build_app(Path(td))
+            config = app.ctx.services["config"]
+            try:
+                page = app._pages["dashboard"]
+                config.update({"server": {"api_key": "old-secret"}})
+                page._render_endpoints()
+                config.update({"server": {"api_key": "new-secret"}})
+                page._copy_api_key()
+                self.assertEqual(app.root.clipboard_get(), "new-secret")
+            finally:
+                if app.root.winfo_exists():
+                    app._on_close()
+                logs.close()
+
+    def test_status_context_groups_profiles_once(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            app, logs = self._build_app(Path(td))
+            profiles = app.ctx.services["profiles"]
+            try:
+                with mock.patch.object(profiles, "by_model",
+                                       wraps=profiles.by_model) as grouped:
+                    app._update_status_context()
+                self.assertEqual(grouped.call_count, 1)
+            finally:
+                if app.root.winfo_exists():
+                    app._on_close()
+                logs.close()
+
+    def test_runtime_assets_do_not_render_unknown_size(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            app, logs = self._build_app(Path(td))
+            try:
+                app.show_page("runtime")
+                app._cancel_prewarm()
+                page = app._pages["runtime"]
+                page._releases = [{
+                    "tag": "b1", "published": "2026-01-01",
+                    "assets": [{"name": "llama.zip", "size": 0,
+                                 "url": "https://example.invalid/llama.zip"}],
+                }]
+                page._release_cb.configure(values=["b1"])
+                page._release_cb.current(0)
+                page._show_assets()
+                columns = page._assets.cget("columns")
+                self.assertEqual(
+                    columns if isinstance(columns, tuple)
+                    else tuple(str(columns).split()), ("name",))
+                self.assertEqual(page._assets.item("0", "values"),
+                                 ("llama.zip",))
+            finally:
+                if app.root.winfo_exists():
+                    app._on_close()
+                logs.close()
+
     def test_dashboard_defers_closed_logs_until_open(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             with mock.patch.object(LogService, "get", autospec=True,
@@ -389,6 +489,7 @@ class TestAppLayout(_TkTest):
                 try:
                     page = app._pages["dashboard"]
                     self.assertFalse(page._logs_open)
+                    self.assertIsNone(page._log_text)
                     self.assertEqual(get.call_count, 0)
 
                     logs.log("app", "info", "before opening")
@@ -396,6 +497,7 @@ class TestAppLayout(_TkTest):
                     self.assertEqual(page._visible_logs(), "")
 
                     page._set_logs_open(True)
+                    self.assertIsNotNone(page._log_text)
                     self.assertEqual(get.call_count, 1)
                     self.assertIn("before opening", page._visible_logs())
 
@@ -411,7 +513,51 @@ class TestAppLayout(_TkTest):
                 finally:
                     if app.root.winfo_exists():
                         app._on_close()
-                    logs.close()
+                logs.close()
+
+    def test_dashboard_defers_closed_optional_content(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            app, logs = self._build_app(Path(td))
+            try:
+                page = app._pages["dashboard"]
+                page._ep.set_open(False)
+                page._launch_card.set_open(False)
+                page._endpoint_dirty = True
+                page._cmd_dirty = True
+                with mock.patch.object(page, "_render_endpoints") as endpoints, \
+                        mock.patch.object(page, "_refresh_cmd") as command:
+                    page._on_status({"status": "stopped"})
+                endpoints.assert_not_called()
+                command.assert_not_called()
+                with mock.patch.object(page, "_render_endpoints") as endpoints, \
+                        mock.patch.object(page, "_refresh_cmd") as command:
+                    page._ep.set_open(True)
+                    page._launch_card.set_open(True)
+                endpoints.assert_called_once_with()
+                command.assert_called_once_with()
+            finally:
+                if app.root.winfo_exists():
+                    app._on_close()
+                logs.close()
+
+    def test_settings_defers_closed_server_form_and_serializes_config(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            app, logs = self._build_app(Path(td))
+            app.ctx.collapsible_states["settings.server"] = False
+            try:
+                app.show_page("settings")
+                app._cancel_prewarm()
+                page = app._pages["settings"]
+                self.assertFalse(page._server_card.is_open)
+                self.assertFalse(page._server_built)
+                self.assertEqual(page._serialize()["port"], "8080")
+                page._server_card.set_open(True)
+                self.assertTrue(page._server_built)
+                self.assertEqual(page._port.get(), "8080")
+            finally:
+                if app.root.winfo_exists():
+                    app._on_close()
+                logs.close()
 
     def test_dashboard_skips_unchanged_endpoint_and_command_render(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -512,6 +658,174 @@ class TestNavigationRanking(unittest.TestCase):
         font = SimpleNamespace(measure=len)
         self.assertEqual(App._ellipsize_status_part("model · abcdef", 11, font),
                          "model · ab…")
+
+    def test_navigation_idle_callback_ignores_stale_navigation(self) -> None:
+        app = object.__new__(App)
+        app._navigation_token = 2
+        app._active = "settings"
+        app._page_navigation_idle_ms = {}
+        app._closing = False
+        app._rebuilding = False
+
+        app._record_navigation_idle("dashboard", time.perf_counter(), 1)
+        self.assertEqual(app._page_navigation_idle_ms, {})
+        app._record_navigation_idle("settings", time.perf_counter(), 2)
+        self.assertIn("settings", app._page_navigation_idle_ms)
+
+
+class TestBenchmarkHarness(unittest.TestCase):
+    def test_startup_clock_starts_before_app_build(self) -> None:
+        from tools import benchmark_ui
+
+        order = []
+
+        class FakeApp:
+            def _cancel_prewarm(self):
+                order.append("cancel")
+
+        def clock():
+            order.append("clock")
+            return len(order)
+
+        def build(_base, geometry=None):
+            order.append("build")
+            return FakeApp(), object()
+
+        with mock.patch.object(benchmark_ui.time, "perf_counter",
+                               side_effect=clock), \
+                mock.patch.object(benchmark_ui.TestAppLayout, "_build_app",
+                                   side_effect=build), \
+                mock.patch.object(benchmark_ui, "_settle"):
+            benchmark_ui._build_and_settle(Path("."), "960x640")
+        self.assertEqual(order[:2], ["clock", "build"])
+
+    def test_dashboard_first_load_uses_startup_without_navigation(self) -> None:
+        from tools import benchmark_ui
+
+        class FakeApp:
+            _active = "dashboard"
+            _pages = {"dashboard": object()}
+            _page_construct_ms = {}
+            _page_on_show_ms = {}
+            _page_navigation_idle_ms = {}
+
+            def show_page(self, _page):
+                raise AssertionError("dashboard first load navigated")
+
+        result = benchmark_ui._first_measurement(
+            FakeApp(), "dashboard", {"startup_settled_ms": 12.0})
+        self.assertEqual(result["startup_settled_ms"], 12.0)
+        self.assertNotIn("show_call_ms", result)
+
+    def test_non_dashboard_first_load_starts_before_target_exists(self) -> None:
+        from tools import benchmark_ui
+
+        class Root:
+            def update_idletasks(self):
+                pass
+
+            def update(self):
+                pass
+
+        class FakeApp:
+            root = Root()
+            _active = "dashboard"
+            _pages = {"dashboard": object()}
+            _page_construct_ms = {"settings": 1.0}
+            _page_on_show_ms = {"settings": 2.0}
+            _page_navigation_idle_ms = {"settings": 3.0}
+
+            def show_page(self, page):
+                self.assert_not_present = page not in self._pages
+                self._pages[page] = object()
+                self._active = page
+
+            def _cancel_prewarm(self):
+                pass
+
+        app = FakeApp()
+        benchmark_ui._first_measurement(
+            app, "settings", {"startup_settled_ms": 12.0})
+        self.assertTrue(app.assert_not_present)
+
+    def test_repeated_navigation_always_returns_through_other_page(self) -> None:
+        from tools import benchmark_ui
+
+        class Root:
+            def update_idletasks(self):
+                pass
+
+            def update(self):
+                pass
+
+        class FakeApp:
+            root = Root()
+            _active = "settings"
+            _pages = {"dashboard": object(), "settings": object()}
+            _page_construct_ms = {}
+            _page_on_show_ms = {}
+            _page_navigation_idle_ms = {}
+
+            def __init__(self):
+                self.calls = []
+
+            def show_page(self, page):
+                self.calls.append(page)
+                self._active = page
+
+            def _cancel_prewarm(self):
+                pass
+
+        app = FakeApp()
+        benchmark_ui._repeated_measurements(app, "settings", "dashboard", 2)
+        self.assertEqual(app.calls,
+                         ["dashboard", "settings", "dashboard", "settings",
+                          "dashboard"])
+
+    def test_settled_navigation_reports_two_tk_rounds(self) -> None:
+        from tools import benchmark_ui
+
+        class Root:
+            def __init__(self):
+                self.calls = []
+
+            def update_idletasks(self):
+                self.calls.append("idle")
+
+            def update(self):
+                self.calls.append("update")
+
+        class FakeApp:
+            def __init__(self):
+                self.root = Root()
+                self.page = None
+
+            def show_page(self, page):
+                self.page = page
+
+            def _cancel_prewarm(self):
+                pass
+
+        app = FakeApp()
+        timings = benchmark_ui._navigate_and_settle(app, "settings")
+        self.assertEqual(app.root.calls, ["idle", "update"] * 2)
+        self.assertEqual(app.page, "settings")
+        self.assertEqual(set(timings), {"show_call_ms", "settled_ms"})
+
+    def test_theme_font_families_are_enumerated_once(self) -> None:
+        from llama_router.ui import theme
+
+        previous = theme._MONO_FAMILY, theme._UI_FAMILY
+        try:
+            theme._MONO_FAMILY = None
+            theme._UI_FAMILY = None
+            with mock.patch.object(theme.tkfont, "families",
+                                   return_value=set()) as families:
+                theme.init_fonts(object())
+                theme.init_fonts(object())
+            self.assertEqual(families.call_count, 1)
+        finally:
+            theme._MONO_FAMILY, theme._UI_FAMILY = previous
 
 
 if __name__ == "__main__":

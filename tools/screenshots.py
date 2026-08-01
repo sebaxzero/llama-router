@@ -29,20 +29,28 @@ Screenshots only need Pillow. Video uses imageio-ffmpeg's bundled FFmpeg when
 there is no `ffmpeg` executable on PATH. The MP4 is the high-quality source;
 the smaller looping GIF is the version embedded by `README.md`.
 
-The app builds against your real `config/` state, so a populated models list
-gives better screenshots. If the registry is empty a placeholder entry is
-injected in memory only; nothing is persisted.
+The fixture locks the real data folder, copies only its database and generated
+preset into a temporary base, and keeps every write there. Registered model
+and runtime paths remain absolute, so a populated registry still gives better
+screenshots without copying large files.
 """
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(os.environ.get(
+    "LLAMA_ROUTER_ROOT", Path(__file__).resolve().parent.parent))
+if getattr(sys, "frozen", False) and "LLAMA_ROUTER_ROOT" not in os.environ:
+    ROOT = next((parent for parent in Path(sys.executable).resolve().parents
+                 if (parent / "tools" / "screenshots.py").is_file()), ROOT)
 sys.path.insert(0, str(ROOT))
 
 try:
@@ -68,11 +76,11 @@ GIF_SIZE = (800, 420)
 VIDEO_PROMPT = "hello world"
 
 
-def build_app(*, demo: bool = False):
-    """Construct the real App the same way main.py does."""
+def build_app(*, base: Path, demo: bool = False):
+    """Construct the capture fixture against an explicit isolated base."""
     from llama_router.core.events import EventBus
     from llama_router.core.logs import LogService
-    from llama_router.core.paths import PathManager, resolve_base
+    from llama_router.core.paths import PathManager
     from llama_router.core.storage import init_db
     from llama_router.i18n import set_language
     from llama_router.preset import write_preset
@@ -85,7 +93,7 @@ def build_app(*, demo: bool = False):
     from llama_router.services.server_manager import ServerManager
     from llama_router.ui.app import App, AppContext
 
-    paths = PathManager(resolve_base())
+    paths = PathManager(base)
     paths.ensure_dirs()
     init_db(paths.db_path)
 
@@ -111,7 +119,6 @@ def build_app(*, demo: bool = False):
     services["runtimes"] = runtimes = RuntimeManager(
         paths, config, downloads, events)
     runtimes.load()
-    downloads.load()
 
     services["server"] = server = ServerManager(
         config, runtimes, models, profiles, events, paths, logs)
@@ -139,7 +146,7 @@ def build_app(*, demo: bool = False):
 
 
 def _ensure_sample_model(models, profiles) -> None:
-    """Inject an in-memory placeholder so empty registries still screenshot.
+    """Inject a placeholder; fixture persistence stays in the temp base.
 
     Written straight into the registry dict and deliberately NOT persisted —
     running this tool must never mutate the user's real model list.
@@ -162,6 +169,35 @@ def _ensure_sample_model(models, profiles) -> None:
     models._models[entry.id] = entry
     profiles.ensure_defaults(entry.id)
     print("note: model registry empty — injected an in-memory placeholder")
+
+
+@contextmanager
+def isolated_capture_base(real_base: Path | None = None):
+    """Yield a temporary copy of capture state while locking *real_base*.
+
+    Only the database and generated preset are copied. Registered model and
+    runtime paths remain absolute references, so no large user files need to
+    be duplicated and every write made by the fixture is disposable.
+    """
+    from llama_router.core.paths import PathManager, resolve_base
+    from llama_router.core.storage import InstanceGuard
+
+    source = PathManager((real_base or resolve_base()).resolve())
+    guard = InstanceGuard(source.config_dir / "llama-router.instance")
+    if not guard.acquire():
+        raise RuntimeError("close Llama Router before capturing screenshots")
+    try:
+        with tempfile.TemporaryDirectory(prefix="llama-router-capture-") as td:
+            target_paths = PathManager(Path(td))
+            target_paths.ensure_dirs()
+            for source_path, target_path in (
+                    (source.db_path, target_paths.db_path),
+                    (source.preset_ini, target_paths.preset_ini)):
+                if source_path.is_file():
+                    shutil.copy2(source_path, target_path)
+            yield target_paths.base
+    finally:
+        guard.release()
 
 
 def _place_in_work_area(app, width: int, height: int) -> None:
@@ -610,7 +646,7 @@ def record_demo(app, output: Path, ffmpeg: str,
             zoom=1.08)
         recorder.hold(2.0)
 
-        print("video: showing Models & Profiles, Runtime, and Settings")
+        print("video: showing Models, Runtime, and Settings")
         for key in ("profiles", "runtime", "settings"):
             recorder.click(
                 app._nav[key], lambda page=key: _show_collapsed_page(app, page),
@@ -672,22 +708,26 @@ def _close_app(app, timeout: float = 20) -> None:
             pass
 
 
-_MISSING = object()
-
-
-def _restore_db_value(db_path: Path, key: str, value) -> None:
-    if value is not _MISSING:
-        from llama_router.core.storage import db_write
-        db_write(db_path, key, value)
-        return
-    import sqlite3
-    connection = sqlite3.connect(str(db_path))
-    try:
-        with connection:
-            connection.execute("DELETE FROM kv WHERE key = ?", (key,))
-    finally:
-        connection.close()
-
+@contextmanager
+def capture_app(*, demo: bool = False, real_base: Path | None = None):
+    """Build and close an App while its isolated base is still available."""
+    with isolated_capture_base(real_base) as capture_base:
+        app = build_app(base=capture_base, demo=demo)
+        try:
+            yield app
+        finally:
+            playground = app.ctx.services.get("playground")
+            if playground is not None:
+                playground.cancel()
+            _close_app(app)
+            for service in app.ctx.services.values():
+                close = getattr(service, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
+            app.ctx.logs.close()
 
 def main() -> int:
     from llama_router.ui import theme
@@ -754,80 +794,49 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
-    guard = None
-    app = None
-    saved_theme = None
-    saved_values = {}
-    if args.video:
-        from llama_router.core.paths import PathManager, resolve_base
-        from llama_router.core.storage import InstanceGuard
-        paths = PathManager(resolve_base())
-        guard = InstanceGuard(paths.config_dir / "llama-router.instance")
-        if not guard.acquire():
-            print("close Llama Router before recording the demo video",
-                  file=sys.stderr)
-            return 1
-
     try:
-        app = build_app(demo=args.video)
-        saved_theme = app.ctx.services["config"].get().theme
-        if args.video:
-            from llama_router.core.storage import db_read
-            for key in ("ui_state", "pg_sessions"):
-                saved_values[key] = db_read(
-                    app.ctx.paths.db_path, key, default=_MISSING)
-            problem = _demo_problem(app)
-            if problem:
-                raise RuntimeError(f"cannot record demo: {problem}")
-            record_demo(app, out_dir / VIDEO_FILE, ffmpeg)
-            print(f"\nDone — MP4 and GIF in {out_dir}")
-        else:
-            shot = make_shooter(app, out_dir)
-            default_mode = not args.pages and not args.themes and not args.sizes
-            if default_mode:
-                app.ctx.apply_theme(DEFAULT_THEME)
-                for page in README_PAGES:
-                    app.show_page(page)
-                    shot(f"page_{page}.png")
-                for name in README_THEME_SHOTS:
-                    app.ctx.apply_theme(name)
-                    app.show_page("settings")
-                    shot(f"settings_{name}.png")
-                app.ctx.apply_theme(DEFAULT_THEME)
-                app.show_page("dashboard")
-                shot("final_dashboard.png")
+        with capture_app(demo=args.video) as app:
+            if args.video:
+                problem = _demo_problem(app)
+                if problem:
+                    raise RuntimeError(f"cannot record demo: {problem}")
+                record_demo(app, out_dir / VIDEO_FILE, ffmpeg)
+                print(f"\nDone — MP4 and GIF in {out_dir}")
             else:
-                for name in (args.themes or [DEFAULT_THEME]):
-                    app.ctx.apply_theme(name)
-                    for page in (args.pages or README_PAGES):
-                        for size in sizes:
-                            app.show_page(page)
-                            suffix = (f"_{size[0]}x{size[1]}"
-                                      if args.sizes else "")
-                            shot(f"{page}_{name}{suffix}.png", size)
-                app.ctx.apply_theme(DEFAULT_THEME)
-            print(f"\nDone — images in {out_dir}")
+                shot = make_shooter(app, out_dir)
+                default_mode = (not args.pages and not args.themes
+                                and not args.sizes)
+                if default_mode:
+                    app.ctx.apply_theme(DEFAULT_THEME)
+                    for page in README_PAGES:
+                        app.show_page(page)
+                        shot(f"page_{page}.png")
+                    for name in README_THEME_SHOTS:
+                        app.ctx.apply_theme(name)
+                        app.show_page("settings")
+                        shot(f"settings_{name}.png")
+                    app.ctx.apply_theme(DEFAULT_THEME)
+                    app.show_page("dashboard")
+                    shot("final_dashboard.png")
+                else:
+                    for name in (args.themes or [DEFAULT_THEME]):
+                        app.ctx.apply_theme(name)
+                        for page in (args.pages or README_PAGES):
+                            for size in sizes:
+                                app.show_page(page)
+                                suffix = (f"_{size[0]}x{size[1]}"
+                                          if args.sizes else "")
+                                shot(f"{page}_{name}{suffix}.png", size)
+                    app.ctx.apply_theme(DEFAULT_THEME)
+                print(f"\nDone — images in {out_dir}")
 
-        if args.keep_open:
-            print("Window left open for review; close it when finished.")
-            app.run()
-        return 0
+            if args.keep_open:
+                print("Window left open for review; close it when finished.")
+                app.run()
+            return 0
     except Exception as error:
         print(f"capture failed: {error}", file=sys.stderr)
         return 1
-    finally:
-        if app is not None:
-            playground = app.ctx.services.get("playground")
-            if playground is not None:
-                playground.cancel()
-            _close_app(app)
-            if saved_theme is not None:
-                app.ctx.services["config"].update({"theme": saved_theme})
-            for key, value in saved_values.items():
-                _restore_db_value(app.ctx.paths.db_path, key, value)
-            app.ctx.logs.close()
-        if guard is not None:
-            guard.release()
 
 
 if __name__ == "__main__":

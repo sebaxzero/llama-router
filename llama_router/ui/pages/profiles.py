@@ -435,6 +435,8 @@ class ProfilesPage(Page):
             state_key="preset-editor", accent=c["panel_num"],
             on_toggle=self._on_preset_card_toggle)
         self._preset_card.pack(fill="x", pady=(0, 10))
+        if self._preset_card.is_open:
+            self._ensure_preset_view()
 
         # ── Models ───────────────────────────────────────────────────────────
         self._profile_list = self._active_profiles_card
@@ -1131,7 +1133,7 @@ class ProfilesPage(Page):
                 self._profiles.set_active(oid, not p.active)
                 self._refresh_tree(keep=row)
         elif kind == "m":
-            plist = self._profiles_snapshot.get(oid, ())
+            plist = self._profiles.list(oid)
             self._profiles.set_active_all(
                 oid, any(not p.active for p in plist))
             self._refresh_tree(keep=row)

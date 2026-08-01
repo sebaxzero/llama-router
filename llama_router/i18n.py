@@ -29,7 +29,6 @@ CATALOGS: dict[str, dict[str, str]] = {
     "es": {
         # ── Navigation / shell ───────────────────────────────────────────────
         "Models": "Modelos",
-        "Models & Profiles": "Modelos y perfiles",
         "Profiles": "Perfiles",
         "Dashboard": "Panel",
         "Runtime": "Runtime",
@@ -197,8 +196,8 @@ CATALOGS: dict[str, dict[str, str]] = {
         "RoPE freq scale": "Escala de frecuencia RoPE",
 
         # ── Runtime ──────────────────────────────────────────────────────────
-        "Prebuilt binaries from ggerganov/llama.cpp releases":
-            "Binarios precompilados de las releases de ggerganov/llama.cpp",
+        "Prebuilt binaries from ggml-org/llama.cpp releases":
+            "Binarios precompilados de las releases de ggml-org/llama.cpp",
         "Import local build": "Importar build local",
         "Refresh releases": "Actualizar releases",
         "Fetching…": "Consultando…",
@@ -229,8 +228,8 @@ CATALOGS: dict[str, dict[str, str]] = {
         "No runtime selected": "Sin runtime seleccionado",
         "No runtime installed — pick one on the Runtime page.":
             "No hay runtime instalado — elige uno en la página Runtime.",
-        "No enabled model has an active profile — check Models and Profiles.":
-            "Ningún modelo habilitado tiene un perfil activo — revisa Modelos y Perfiles.",
+        "No enabled model has an active profile — check Models.":
+            "Ningún modelo habilitado tiene un perfil activo — revisa Modelos.",
         "Port {port} is busy — stop the other process or change it in Settings.":
             "El puerto {port} está ocupado — detén el otro proceso o cámbialo en Ajustes.",
         "The server is already changing state — wait a moment.":

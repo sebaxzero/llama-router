@@ -7,8 +7,8 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -110,12 +110,15 @@ class TestStreaming(unittest.TestCase):
     def setUpClass(cls):
         cls.httpd = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
         cls.port = cls.httpd.server_address[1]
-        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+        cls.http_thread = threading.Thread(
+            target=cls.httpd.serve_forever, daemon=True)
+        cls.http_thread.start()
 
     @classmethod
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.httpd.server_close()
+        cls.http_thread.join(timeout=5)
 
     def _service(self, td, models=()):
         paths = PathManager(Path(td))

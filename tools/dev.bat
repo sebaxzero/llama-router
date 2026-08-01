@@ -10,6 +10,8 @@ call :select_python
 if errorlevel 1 goto no_python
 call :check_python
 if errorlevel 1 goto bad_python
+if not defined TCL_LIBRARY if exist "tools\.venv\tcl\tcl8.6\init.tcl" set "TCL_LIBRARY=%CD%\tools\.venv\tcl\tcl8.6"
+if not defined TK_LIBRARY if exist "tools\.venv\tcl\tk8.6\tk.tcl" set "TK_LIBRARY=%CD%\tools\.venv\tcl\tk8.6"
 
 if "%INTERACTIVE%"=="0" goto cli
 
@@ -29,14 +31,16 @@ echo  [6] Generar capturas personalizadas
 echo  [7] Grabar video y GIF de demostracion
 echo  [8] Regenerar iconos
 echo  [9] Crear build release
+echo  [B] Benchmark de la UI
+echo  [R] Tests con recursos (Tcl/Tk + tracemalloc)
 echo  [D] Crear build debug
 echo  [I] Instalar dependencias de desarrollo
 echo  [H] Mostrar ayuda de consola
 echo  [0] Salir
 echo.
-choice /c 123456789DIH0 /n /m "Selecciona una opcion: "
+choice /c 123456789BRDIH0 /n /m "Selecciona una opcion: "
 set "MENU_CHOICE=%errorlevel%"
-if "%MENU_CHOICE%"=="13" goto end
+if "%MENU_CHOICE%"=="15" goto end
 call :menu_dispatch "%MENU_CHOICE%"
 set "TASK_RC=%errorlevel%"
 call :show_result "%TASK_RC%"
@@ -58,9 +62,11 @@ if "%~1"=="6" goto custom_screenshots
 if "%~1"=="7" goto video
 if "%~1"=="8" goto icon
 if "%~1"=="9" goto build
-if "%~1"=="10" goto build_debug
-if "%~1"=="11" goto install_dependencies
-if "%~1"=="12" goto help
+if "%~1"=="10" goto benchmark
+if "%~1"=="11" goto tests_resources
+if "%~1"=="12" goto build_debug
+if "%~1"=="13" goto install_dependencies
+if "%~1"=="14" goto help
 exit /b 2
 
 :cli_dispatch
@@ -71,6 +77,8 @@ if /i "%~1"=="compile" goto compile
 if /i "%~1"=="screenshots" goto screenshots
 if /i "%~1"=="custom-screenshots" goto custom_screenshots
 if /i "%~1"=="video" goto video
+if /i "%~1"=="benchmark" goto benchmark
+if /i "%~1"=="tests-resources" goto tests_resources
 if /i "%~1"=="icon" goto icon
 if /i "%~1"=="build" goto build
 if /i "%~1"=="build-debug" goto build_debug
@@ -94,8 +102,16 @@ exit /b %errorlevel%
 "%PYTHON_EXE%" %PYTHON_ARG% -m unittest discover -s tools\tests -p "test_*.py"
 exit /b %errorlevel%
 
+:tests_resources
+"%PYTHON_EXE%" %PYTHON_ARG% -X tracemalloc=10 -W default -m unittest discover -s tools\tests -p "test_*.py"
+exit /b %errorlevel%
+
 :compile
-"%PYTHON_EXE%" %PYTHON_ARG% -m compileall -q main.py llama_router tools\build.py tools\generate_icon.py tools\screenshots.py tools\tests
+"%PYTHON_EXE%" %PYTHON_ARG% -m compileall -q main.py llama_router tools\benchmark_ui.py tools\build.py tools\generate_icon.py tools\screenshots.py tools\tests
+exit /b %errorlevel%
+
+:benchmark
+"%PYTHON_EXE%" %PYTHON_ARG% tools\benchmark_ui.py
 exit /b %errorlevel%
 
 :screenshots
@@ -155,10 +171,12 @@ echo Comandos:
 echo   app                 Ejecutar la aplicacion
 echo   verify              Compilar y ejecutar todos los tests
 echo   tests               Ejecutar todos los tests
+echo   tests-resources     Ejecutar tests con Tcl/Tk, tracemalloc y warnings
 echo   compile             Compilar las fuentes Python
 echo   screenshots         Regenerar las capturas del README
 echo   custom-screenshots  Abrir el asistente de capturas
 echo   video               Grabar el video y GIF en _capture
+echo   benchmark           Medir construccion y navegacion de la UI
 echo   icon                Regenerar los iconos de la aplicacion
 echo   build               Crear el ejecutable release
 echo   build-debug         Crear el ejecutable con consola

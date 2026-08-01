@@ -2,16 +2,16 @@
 from __future__ import annotations
 
 import http.server
+import io
 import sys
+import tarfile
 import tempfile
 import threading
 import time
 import unittest
-from unittest import mock
-import tarfile
-import io
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -80,6 +80,181 @@ class TestDownloadManager(unittest.TestCase):
             env.events.drain()
             self.assertEqual(env.downloads._limit, 7)
 
+    def test_close_interrupts_retry_backoff(self):
+        with tempfile.TemporaryDirectory() as td:
+            env = _Env(td)
+            attempts = mock.Mock(side_effect=ConnectionError("temporary"))
+            with mock.patch.object(env.downloads, "_attempt_download", attempts):
+                item = env.downloads.start_runtime(
+                    "http://example.invalid/blob.bin", "blob.bin", td)
+                deadline = time.monotonic() + 2
+                while attempts.call_count == 0 and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                started = time.monotonic()
+                env.downloads.close(timeout=0.5)
+                self.assertLess(time.monotonic() - started, 1.0)
+                self.assertEqual(item.state, DownloadState.QUEUED)
+                self.assertFalse(env.downloads._threads)
+
+    def test_close_releases_workers_waiting_for_a_slot(self):
+        with tempfile.TemporaryDirectory() as td:
+            env = _Env(td)
+            env.downloads._limit = 1
+            first_started = threading.Event()
+
+            def wait_for_close(_item):
+                first_started.set()
+                env.downloads._shutdown.wait()
+
+            with mock.patch.object(env.downloads, "_download",
+                                   side_effect=wait_for_close):
+                first = env.downloads.start_runtime("first", "first", td)
+                self.assertTrue(first_started.wait(2))
+                second = env.downloads.start_runtime("second", "second", td)
+                env.downloads.close(timeout=1)
+                self.assertEqual(first.state, DownloadState.QUEUED)
+                self.assertEqual(second.state, DownloadState.QUEUED)
+                self.assertFalse(env.downloads._threads)
+
+    def test_close_is_idempotent_and_blocks_new_callbacks(self):
+        with tempfile.TemporaryDirectory() as td:
+            env = _Env(td)
+            called = []
+            env.downloads.close(timeout=0.1)
+            env.downloads.close(timeout=0.1)
+            item = env.downloads.start_runtime(
+                "http://example.invalid/blob.bin", "blob.bin", td,
+                on_complete=lambda _item: called.append(True))
+            time.sleep(0.05)
+            self.assertEqual(item.state, DownloadState.QUEUED)
+            self.assertEqual(called, [])
+
+    def test_shutdown_after_archive_move_retries_postprocess_after_restart(self):
+        with tempfile.TemporaryDirectory() as td:
+            env = _Env(td)
+            fresh = None
+            moved = threading.Event()
+            callback = mock.Mock()
+
+            def download_then_wait(item):
+                part = Path(str(item.destination) + ".part")
+                part.write_bytes(PAYLOAD)
+                item.total_bytes = len(PAYLOAD)
+                item.downloaded_bytes = len(PAYLOAD)
+                env.downloads._finalise(item)
+                moved.set()
+                env.downloads._shutdown.wait(2)
+
+            try:
+                with mock.patch.object(env.downloads, "_download",
+                                       side_effect=download_then_wait):
+                    item = env.downloads.start_runtime(
+                        "http://example.invalid/archive.zip", "archive.zip", td,
+                        on_complete=callback)
+                    self.assertTrue(moved.wait(2))
+                    env.downloads.close(timeout=1)
+
+                self.assertEqual(item.state, DownloadState.QUEUED)
+                self.assertFalse(callback.called)
+                destination = Path(item.destination)
+                self.assertEqual(destination.read_bytes(), PAYLOAD)
+                saved = storage.db_read(env.paths.db_path, "downloads", [])
+                self.assertEqual([row["id"] for row in saved], [item.id])
+
+                fresh = DownloadManager(env.paths, env.config, env.events)
+                completed = []
+                fresh.set_completion_handler(
+                    "runtime", lambda loaded: completed.append(loaded.id))
+                with mock.patch.object(
+                        fresh, "_attempt_download",
+                        side_effect=AssertionError("archive was downloaded again")):
+                    fresh.load()
+                    loaded = fresh.get(item.id)
+                    self.assertIsNotNone(loaded)
+                    _wait(loaded)
+                self.assertEqual(completed, [item.id])
+                self.assertEqual(storage.db_read(
+                    env.paths.db_path, "downloads", []), [])
+            finally:
+                env.downloads.close()
+                if fresh is not None:
+                    fresh.close()
+
+    def test_close_of_active_response_pauses_instead_of_failing(self):
+        with tempfile.TemporaryDirectory() as td:
+            env = _Env(td)
+            started = threading.Event()
+
+            class BlockedResponse:
+                headers = {"Content-Length": "4"}
+                status = 200
+
+                def __init__(self):
+                    self.closed = threading.Event()
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_exc):
+                    self.close()
+
+                def read(self, _size):
+                    started.set()
+                    self.closed.wait(2)
+                    raise ValueError("read of closed response")
+
+                def close(self):
+                    self.closed.set()
+
+            response = BlockedResponse()
+            try:
+                with mock.patch(
+                        "llama_router.services.download_manager.urllib.request.urlopen",
+                        return_value=response):
+                    item = env.downloads.start_runtime(
+                        "http://example.invalid/blocked", "blocked.bin", td)
+                    self.assertTrue(started.wait(2))
+                    env.downloads.close(timeout=1)
+                self.assertEqual(item.state, DownloadState.QUEUED)
+                self.assertEqual(item.error, "")
+                self.assertFalse(env.downloads._threads)
+            finally:
+                env.downloads.close()
+
+    def test_queue_stays_persisted_until_postprocess_finishes(self):
+        with tempfile.TemporaryDirectory() as td:
+            env = _Env(td)
+            callback_started = threading.Event()
+            release_callback = threading.Event()
+
+            def download(item):
+                part = Path(str(item.destination) + ".part")
+                part.write_bytes(PAYLOAD)
+                item.total_bytes = len(PAYLOAD)
+                item.downloaded_bytes = len(PAYLOAD)
+                env.downloads._finalise(item)
+
+            def callback(_item):
+                callback_started.set()
+                release_callback.wait(2)
+
+            try:
+                with mock.patch.object(env.downloads, "_download",
+                                       side_effect=download):
+                    item = env.downloads.start_runtime(
+                        "http://example.invalid/archive.zip", "archive.zip", td,
+                        on_complete=callback)
+                    self.assertTrue(callback_started.wait(2))
+                    saved = storage.db_read(env.paths.db_path, "downloads", [])
+                    self.assertEqual([row["id"] for row in saved], [item.id])
+                    self.assertEqual(item.state, DownloadState.DOWNLOADING)
+                    release_callback.set()
+                    _wait(item)
+                self.assertEqual(storage.db_read(
+                    env.paths.db_path, "downloads", []), [])
+            finally:
+                env.downloads.close()
+
     @mock.patch("llama_router.services.download_manager._http_text")
     def test_github_releases_use_public_feed(self, fetch):
         fetch.return_value = """\
@@ -110,12 +285,15 @@ class TestDownloadManager(unittest.TestCase):
         cls.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0),
                                                     _RangeHandler)
         cls.port = cls.httpd.server_address[1]
-        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+        cls.http_thread = threading.Thread(
+            target=cls.httpd.serve_forever, daemon=True)
+        cls.http_thread.start()
 
     @classmethod
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.httpd.server_close()
+        cls.http_thread.join(timeout=5)
 
     def _url(self) -> str:
         return f"http://127.0.0.1:{self.port}/blob.bin"
@@ -123,65 +301,85 @@ class TestDownloadManager(unittest.TestCase):
     def test_download_completes(self):
         with tempfile.TemporaryDirectory() as td:
             env = _Env(td)
-            item = env.downloads.start_runtime(self._url(), "blob.bin", td)
-            _wait(item)
-            self.assertEqual(item.state, DownloadState.COMPLETED)
-            self.assertEqual(Path(item.destination).read_bytes(), PAYLOAD)
-            self.assertEqual(item.total_bytes, len(PAYLOAD))
+            try:
+                item = env.downloads.start_runtime(self._url(), "blob.bin", td)
+                _wait(item)
+                self.assertEqual(item.state, DownloadState.COMPLETED)
+                self.assertEqual(Path(item.destination).read_bytes(), PAYLOAD)
+                self.assertEqual(item.total_bytes, len(PAYLOAD))
+            finally:
+                env.downloads.close()
 
     def test_resume_from_part(self):
         with tempfile.TemporaryDirectory() as td:
             env = _Env(td)
-            dest = Path(td) / "blob.bin"
-            # Simulate an interrupted download: half the payload in .part
-            Path(str(dest) + ".part").write_bytes(PAYLOAD[:len(PAYLOAD) // 2])
-            item = env.downloads.start_runtime(self._url(), "blob.bin", td)
-            _wait(item)
-            self.assertEqual(item.state, DownloadState.COMPLETED)
-            self.assertEqual(dest.read_bytes(), PAYLOAD)
+            try:
+                dest = Path(td) / "blob.bin"
+                # Simulate an interrupted download: half the payload in .part
+                Path(str(dest) + ".part").write_bytes(PAYLOAD[:len(PAYLOAD) // 2])
+                item = env.downloads.start_runtime(self._url(), "blob.bin", td)
+                _wait(item)
+                self.assertEqual(item.state, DownloadState.COMPLETED)
+                self.assertEqual(dest.read_bytes(), PAYLOAD)
+            finally:
+                env.downloads.close()
 
     def test_failure_is_reported(self):
         with tempfile.TemporaryDirectory() as td:
             env = _Env(td)
-            item = env.downloads.start_runtime(
-                "http://127.0.0.1:1/nope.bin", "nope.bin", td)
-            _wait(item, timeout=40)
-            self.assertEqual(item.state, DownloadState.FAILED)
-            self.assertTrue(item.error)
+            try:
+                with mock.patch("llama_router.services.download_manager._MAX_RETRIES", 0):
+                    item = env.downloads.start_runtime(
+                        "http://127.0.0.1:1/nope.bin", "nope.bin", td)
+                _wait(item, timeout=40)
+                self.assertEqual(item.state, DownloadState.FAILED)
+                self.assertTrue(item.error)
+            finally:
+                env.downloads.close()
 
     def test_on_complete_runs_and_failure_captured(self):
         with tempfile.TemporaryDirectory() as td:
             env = _Env(td)
-            ran = []
-            item = env.downloads.start_runtime(
-                self._url(), "blob.bin", td,
-                on_complete=lambda it: ran.append(it.destination))
-            _wait(item)
-            time.sleep(0.2)
-            self.assertEqual(len(ran), 1)
+            try:
+                ran = []
+                item = env.downloads.start_runtime(
+                    self._url(), "blob.bin", td,
+                    on_complete=lambda it: ran.append(it.destination))
+                _wait(item)
+                time.sleep(0.2)
+                self.assertEqual(len(ran), 1)
+            finally:
+                env.downloads.close()
 
     def test_resumed_download_uses_registered_completion_handler(self):
         with tempfile.TemporaryDirectory() as td:
             env = _Env(td)
-            dest = Path(td) / "blob.bin"
-            saved = DownloadItem(
-                id="dl_resume", kind="runtime", name="blob.bin",
-                url=self._url(), destination=str(dest),
-                meta={"marker": "durable"})
-            storage.db_write(env.paths.db_path, "downloads", [saved.to_dict()])
+            fresh = None
+            try:
+                dest = Path(td) / "blob.bin"
+                saved = DownloadItem(
+                    id="dl_resume", kind="runtime", name="blob.bin",
+                    url=self._url(), destination=str(dest),
+                    meta={"marker": "durable"})
+                storage.db_write(env.paths.db_path, "downloads",
+                                 [saved.to_dict()])
 
-            fresh = DownloadManager(env.paths, env.config, env.events)
-            completed = []
-            fresh.set_completion_handler(
-                "runtime", lambda item: completed.append(item.meta["marker"]))
-            fresh.load()
-            item = fresh.get("dl_resume")
-            self.assertIsNotNone(item)
-            _wait(item)
-            deadline = time.monotonic() + 2
-            while not completed and time.monotonic() < deadline:
-                time.sleep(0.02)
-            self.assertEqual(completed, ["durable"])
+                fresh = DownloadManager(env.paths, env.config, env.events)
+                completed = []
+                fresh.set_completion_handler(
+                    "runtime", lambda item: completed.append(item.meta["marker"]))
+                fresh.load()
+                item = fresh.get("dl_resume")
+                self.assertIsNotNone(item)
+                _wait(item)
+                deadline = time.monotonic() + 2
+                while not completed and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertEqual(completed, ["durable"])
+            finally:
+                env.downloads.close()
+                if fresh is not None:
+                    fresh.close()
 
 
 class TestArchiveSafety(unittest.TestCase):
@@ -276,7 +474,10 @@ class TestRuntimeManager(unittest.TestCase):
                     pass
 
             httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
-            threading.Thread(target=httpd.serve_forever, daemon=True).start()
+            http_thread = threading.Thread(
+                target=httpd.serve_forever, daemon=True)
+            http_thread.start()
+            env = None
             try:
                 env = _Env(td)
                 url = f"http://127.0.0.1:{httpd.server_address[1]}/{zpath.name}"
@@ -292,7 +493,11 @@ class TestRuntimeManager(unittest.TestCase):
                 self.assertEqual(rt.state, "installed")
                 self.assertTrue((Path(rt.path)).is_dir())
             finally:
+                if env is not None:
+                    env.downloads.close()
                 httpd.shutdown()
+                httpd.server_close()
+                http_thread.join(timeout=5)
 
 
 class TestOsFilter(unittest.TestCase):

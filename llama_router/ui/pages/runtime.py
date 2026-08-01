@@ -19,7 +19,7 @@ class RuntimePage(Page):
         super().__init__(parent, ctx)
         c = self.c
         head = self.header(t("llama.cpp builds"), t("Runtime"),
-                           t("Prebuilt binaries from ggerganov/llama.cpp releases"))
+                           t("Prebuilt binaries from ggml-org/llama.cpp releases"))
         PillButton(head.actions, c, t("Import local build"),
                    command=self._import_local).pack(side="left", padx=(0, 8))
         self._refresh_btn = PillButton(head.actions, c, t("Refresh releases"),
@@ -80,13 +80,11 @@ class RuntimePage(Page):
                                   command=self._install)
         self._dl_btn.pack(side="right")
 
-        acols = ("name", "size")
+        acols = ("name",)
         self._assets = ttk.Treeview(rel_panel, columns=acols, show="headings",
                                     selectmode="browse")
         self._assets.heading("name", text=t("Asset"))
-        self._assets.heading("size", text=t("Size"))
         self._assets.column("name", width=360, minwidth=200, stretch=True)
-        self._assets.column("size", width=90, anchor="e", stretch=False)
         self._assets.pack(fill="both", expand=True, padx=1, pady=1)
         enable_row_hover(self._assets, c)
         self._rel_status = tk.Label(rel_panel, text="", bg=c["surface"],
@@ -196,7 +194,7 @@ class RuntimePage(Page):
             return
         for j, a in enumerate(self._releases[i]["assets"]):
             self._assets.insert("", "end", iid=str(j),
-                                values=(a["name"], fmt_bytes(a["size"], "mb")))
+                                values=(a["name"],))
 
     def _install(self) -> None:
         i = self._release_cb.current()

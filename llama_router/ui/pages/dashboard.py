@@ -79,12 +79,15 @@ class DashboardPage(Page):
         self._logs_open = False
         self._logs_dirty = True
         self._logs_initialized = False
+        self._log_text = None
+        self._logscroll = None
         self._tick_id = None
 
         # ── Client connection ───────────────────────────────────────────────
         # This card stays full-width. Examples can be long.
         ep = CollapsibleCard(body, c, t("Connect your client"),
                              state_key="dashboard.client",
+                             on_toggle=self._on_endpoint_toggle,
                              accent=c["panel_request"])
         ep.pack(fill="x", padx=PAGE_PAD, pady=(14, 0))
         self._examples_btn = PillButton(ep.header, c, t("Examples"),
@@ -98,7 +101,9 @@ class DashboardPage(Page):
 
         self._ep = ep
         self._endpoint_signature_rendered = None
+        self._endpoint_dirty = True
         self._last_cmd_preview: str | None = None
+        self._cmd_dirty = True
 
         # ── Live resource strip ──────────────────────────────────────────────
         usage = Card(fixed_usage, c, border=c["panel_ok"])
@@ -179,27 +184,8 @@ class DashboardPage(Page):
             (copy_logs, {"side": "right", "padx": (0, 6)}),
             (follow_logs, {"side": "right", "padx": (0, 10)}),
         )
-        self._log_text = tk.Text(
-            self._logpanel.body, height=10, bg=c["inset"], fg=c["text"], bd=0,
-            padx=10, pady=8, font=theme.mono(8), wrap="none", state="disabled",
-            highlightthickness=0)
-        logscroll = ttk.Scrollbar(self._logpanel.body, orient="vertical",
-                                  command=self._log_text.yview)
-        self._log_text.configure(yscrollcommand=logscroll.set)
-        self._logscroll = logscroll
-        # ScrollFrame listens globally to the wheel.  Handle it here first so
-        # the cursor over the log moves the log, rather than the dashboard.
-        self._log_text.bind("<MouseWheel>", self._scroll_logs)
-        self._log_text.bind("<Button-4>", lambda _e: self._scroll_logs(-1))
-        self._log_text.bind("<Button-5>", lambda _e: self._scroll_logs(1))
-        logscroll.pack(side="right", fill="y")
-        self._log_text.pack(fill="both", expand=True, padx=1, pady=(0, 1))
-        for level, token in _LEVEL_COLORS.items():
-            self._log_text.tag_configure(level, foreground=c[token])
-        self._log_text.tag_configure("meta", foreground=c["faint"])
-        for source, token in _SOURCE_COLORS.items():
-            self._log_text.tag_configure("source:" + source,
-                                         foreground=c[token])
+        # The log body is the largest optional widget group on this page.
+        # Build it only when the disclosure is opened.
         # Recompose the dashboard body in operational order.
         ep.pack_forget()
 
@@ -230,6 +216,7 @@ class DashboardPage(Page):
         ep.pack(fill="x", padx=PAGE_PAD, pady=(14, 0))
         launch = CollapsibleCard(body, c, t("Launch command"),
                                  state_key="dashboard.launch",
+                                 on_toggle=self._on_launch_toggle,
                                  accent=c["panel_accent"])
         launch.pack(fill="x", padx=PAGE_PAD, pady=(14, 0))
         self._launch_card = launch
@@ -281,6 +268,37 @@ class DashboardPage(Page):
             self._gpu_card.grid_configure(row=0, column=1, columnspan=1,
                                           padx=0, pady=0)
 
+    def _ensure_log_body(self) -> None:
+        if self._log_text is not None:
+            return
+        c = self.c
+        self._log_text = tk.Text(
+            self._logpanel.body, height=10, bg=c["inset"], fg=c["text"], bd=0,
+            padx=10, pady=8, font=theme.mono(8), wrap="none", state="disabled",
+            highlightthickness=0)
+        self._logscroll = ttk.Scrollbar(
+            self._logpanel.body, orient="vertical", command=self._log_text.yview)
+        self._log_text.configure(yscrollcommand=self._logscroll.set)
+        # ScrollFrame listens globally to the wheel. Handle it here first so
+        # the cursor over the log moves the log, rather than the dashboard.
+        self._log_text.bind("<MouseWheel>", self._scroll_logs)
+        self._log_text.bind("<Button-4>", lambda _e: self._scroll_logs(-1))
+        self._log_text.bind("<Button-5>", lambda _e: self._scroll_logs(1))
+        for level, token in _LEVEL_COLORS.items():
+            self._log_text.tag_configure(level, foreground=c[token])
+        self._log_text.tag_configure("meta", foreground=c["faint"])
+        for source, token in _SOURCE_COLORS.items():
+            self._log_text.tag_configure("source:" + source,
+                                         foreground=c[token])
+
+    def _on_endpoint_toggle(self, open_: bool) -> None:
+        if open_ and self._endpoint_dirty:
+            self._render_endpoints()
+
+    def _on_launch_toggle(self, open_: bool) -> None:
+        if open_ and self._cmd_dirty:
+            self._refresh_cmd()
+
     def _toggle_logs(self) -> None:
         self._set_logs_open(not self._logs_open)
 
@@ -289,6 +307,7 @@ class DashboardPage(Page):
         self.ctx.collapsible_states["dashboard.logs"] = open_
         self._logs_toggle.set_text("▾" if open_ else "▸")
         if open_:
+            self._ensure_log_body()
             if self._logs_dirty or not self._logs_initialized:
                 self._reload_logs()
             for child, options in self._log_actions:
@@ -300,8 +319,10 @@ class DashboardPage(Page):
             for child, _options in self._log_actions:
                 child.pack_forget()
             self._src.pack_forget()
-            self._logscroll.pack_forget()
-            self._log_text.pack_forget()
+            if self._logscroll is not None:
+                self._logscroll.pack_forget()
+            if self._log_text is not None:
+                self._log_text.pack_forget()
 
     def _toggle_steps_card(self) -> None:
         self._steps_card_open = not self._steps_card_open
@@ -344,6 +365,7 @@ class DashboardPage(Page):
     def _render_endpoints(self) -> None:
         signature = self._endpoint_signature()
         if signature == self._endpoint_signature_rendered:
+            self._endpoint_dirty = False
             return
         self._endpoint_signature_rendered = signature
         for widget in self._endpoint_rows.winfo_children():
@@ -384,7 +406,7 @@ class DashboardPage(Page):
                      font=theme.mono(9), padx=8, pady=5).pack(
                          side="left", fill="x", expand=True)
             PillButton(value_box, self.c, t("Copy"), size=8, padx=9, height=24,
-                       command=lambda value=api_key: self._copy_value(value)).pack(
+                       command=self._copy_api_key).pack(
                            side="right", padx=4, pady=3)
         else:
             tk.Label(key_row, text=t("Not configured"), anchor="w",
@@ -404,6 +426,7 @@ class DashboardPage(Page):
                   justify="left", wraplength=650).pack(fill="x", pady=(7, 0))
         if self._examples_open:
             self._render_client_examples()
+        self._endpoint_dirty = False
 
     def _endpoint_signature(self) -> tuple:
         cfg = self._config()
@@ -430,6 +453,7 @@ class DashboardPage(Page):
     def _toggle_client_examples(self) -> None:
         self._examples_open = not self._examples_open
         self._endpoint_signature_rendered = None
+        self._endpoint_dirty = True
         if self._examples_open:
             self._render_client_examples()
             self._client_examples_box.pack(fill="x", pady=(12, 0))
@@ -559,6 +583,10 @@ class DashboardPage(Page):
         self.clipboard_clear()
         self.clipboard_append(value)
 
+    def _copy_api_key(self) -> None:
+        cfg = self._config()
+        self._copy_value(cfg.server.api_key if cfg else "")
+
     def _config(self):
         svc = self.ctx.services.get("config")
         return svc.get() if svc else None
@@ -633,8 +661,14 @@ class DashboardPage(Page):
             t("Stop") if status in ("running", "starting")
             else t("Start server"))
         self._tick_uptime()
-        self._render_endpoints()
-        self._refresh_cmd()
+        if self._ep.is_open:
+            self._render_endpoints()
+        else:
+            self._endpoint_dirty = True
+        if self._launch_card.is_open:
+            self._refresh_cmd()
+        else:
+            self._cmd_dirty = True
 
     def _tick(self) -> None:
         self._tick_id = None
@@ -751,7 +785,7 @@ class DashboardPage(Page):
         port = self.ctx.services["config"].get().server.port
         messages = {
             "no_runtime": t("No runtime installed — pick one on the Runtime page."),
-            "no_models": t("No enabled model has an active profile — check Models and Profiles."),
+            "no_models": t("No enabled model has an active profile — check Models."),
             "port_in_use": t("Port {port} is busy — stop the other process or change it in Settings.", port=port),
             "busy": t("The server is already changing state — wait a moment."),
         }
@@ -767,6 +801,7 @@ class DashboardPage(Page):
             return
         # Empty on a fresh install until the user selects a runtime.
         self._launch_cmd = server.build_cmd_preview()
+        self._cmd_dirty = False
         display_cmd = list(self._launch_cmd)
         if not self._config().show_api_details:
             for index, arg in enumerate(display_cmd):
@@ -817,6 +852,7 @@ class DashboardPage(Page):
             self._logs_dirty = True
 
     def _reload_logs(self) -> None:
+        self._ensure_log_body()
         self._log_text.configure(state="normal")
         self._log_text.delete("1.0", "end")
         for entry in self.ctx.logs.get(limit=500, sources=self._log_sources()):
@@ -830,6 +866,7 @@ class DashboardPage(Page):
         if not self._visible or not self._logs_open:
             self._logs_dirty = True
             return
+        self._ensure_log_body()
         sources = self._log_sources()
         if sources and entry["source"] not in sources:
             return
@@ -860,6 +897,8 @@ class DashboardPage(Page):
 
     def _scroll_logs(self, event_or_steps) -> str:
         """Scroll the log and prevent the dashboard's global wheel binding."""
+        if self._log_text is None:
+            return "break"
         if isinstance(event_or_steps, int):
             steps = event_or_steps
         else:
@@ -872,7 +911,7 @@ class DashboardPage(Page):
         return "break"
 
     def _visible_logs(self) -> str:
-        return self._log_text.get("1.0", "end-1c")
+        return self._log_text.get("1.0", "end-1c") if self._log_text else ""
 
     def _copy_logs(self) -> None:
         self.clipboard_clear()

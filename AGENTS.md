@@ -62,7 +62,7 @@ a one-time dialog to pick that base; the choice is stored in a
 ```
 main.py                  Entry point: builds services + App, calls app.run()
 tools/                   ALL developer tools and tests live here (see §§7–8)
-  screenshots.py             Captures README/ad-hoc UI screenshots (Pillow)
+  screenshots.py             Captures isolated README/ad-hoc screenshots (Pillow)
   generate_icon.py           Regenerates the packaged PNG/ICO app icons
   tests/                     unittest suite
 llama_router/
@@ -80,7 +80,7 @@ llama_router/
     widgets.py           Custom widgets: Card, PillButton, NavItem, StatusDot,
                          SegmentBar, ScrollFrame, section_label, enable_row_hover
     pages/               Active pages: dashboard, playground, profiles
-                         (Models & Profiles workspace), runtime, settings.
+                         (Models workspace), runtime, settings.
                          Legacy models/preset/server modules remain as helpers.
       base.py            Page base class + PAGE_PAD + header() helper
 ```
@@ -174,24 +174,28 @@ not.
 | Tool | What it does |
 | --- | --- |
 | `tools/screenshots.py` | Captures README screenshots or page/theme/size matrices. |
+| `tools/benchmark_ui.py` | Measures page construction and settled Tk navigation. |
 | `tools/build.py` | One-file PyInstaller build (`--debug` keeps the console; `--keep-work` preserves scratch files). Cleans `build/` and `llama-router.spec` automatically. Needs `pip install pyinstaller`; per-OS, no cross-compiling. |
 | `tools/generate_icon.py` | Regenerates `app_icon.png` and multi-resolution `app_icon.ico` using Pillow. |
 
 ### 7.1 `tools/screenshots.py`
 
-Builds the real `App` exactly as `main.py` does, walks pages, switches themes
-and grabs the window with Pillow.
+Builds the real `App` through a capture fixture, walks pages, switches themes
+and grabs the window with Pillow. The fixture locks the real data folder and
+copies only the database and generated preset into a temporary base; it never
+writes the user's config, sessions, downloads, or preset.
 
 ```bat
-py -3 tools/screenshots.py                                :: the README set
+tools\dev.bat screenshots                                :: static review set
 py -3 tools/screenshots.py --pages profiles settings      :: midnight only
 py -3 tools/screenshots.py --pages settings --themes light arctic
 py -3 tools/screenshots.py --pages dashboard --sizes 960x640 1280x860
 py -3 tools/screenshots.py --pages dashboard --out _scratch --keep-open
+tools\dev.bat video                                      :: README demo GIF + MP4
 ```
 
-- **No arguments** → writes exactly the files `README.md` embeds into
-  `llama_router/assets/screenshots/` (see §10).
+- **`tools\dev.bat screenshots`** → writes the committed static review set
+  listed in §10. It does not regenerate the demo video.
 - **`--pages` / `--themes` / `--sizes`** → ad-hoc captures named
   `<page>_<theme>[_<width>x<height>].png` in `--out` (default
   `llama_router/assets/screenshots/`). Use a scratch `--out` so you don't clobber
@@ -200,10 +204,27 @@ py -3 tools/screenshots.py --pages dashboard --out _scratch --keep-open
 - Requires Pillow (`pip install pillow`), a **dev-only** dependency. On a
   headless Linux box run it under `xvfb-run`. Confirm a display exists with
   `python -c "import tkinter;r=tkinter.Tk();print(r.winfo_screenwidth())"`.
-- It reads your real `config/` state. If the model registry is empty it injects
-  an in-memory placeholder model — nothing is ever persisted.
+- It reads the copied database state. If the model registry is empty it injects
+  a placeholder into the temporary fixture; nothing is persisted to the real
+  data folder.
 
-### 7.2 Verifying UI work
+### 7.2 `tools/benchmark_ui.py`
+
+Run the benchmark separately from `verify` because it is slower and sensitive
+to the host:
+
+```bat
+tools\dev.bat benchmark
+```
+
+The default run uses five fresh worker processes per case, two window sizes,
+and three repeated navigations. It reports `app_build_ms`,
+`startup_settled_ms`, `construct_ms`, `on_show_ms`, `show_call_ms`,
+`navigation_idle_ms`, and the externally measured `settled_ms`. Startup and
+first-load comparisons use `startup_settled_ms` or `settled_ms`, never the
+diagnostic navigation-idle number.
+
+### 7.3 Verifying UI work
 
 The agent model generally **cannot view rendered images**, so do both:
 
@@ -219,13 +240,14 @@ assert c["bg"] == "#070b12"                       # midnight bg
 assert app.content.cget("bg") == c["bg"]
 app.show_page("settings")
 sp = app._pages["settings"]
+sp._appearance_card.set_open(True)
 assert set(sp._theme_btns) == set(theme.theme_names())   # never a literal list
 assert sp._theme_btns["midnight"]._kind == "primary"     # active = primary
 app.show_page("profiles")
 assert app._active == "profiles"
 ```
 
-### 7.3 Capture-coordinate gotcha
+### 7.4 Capture-coordinate gotcha
 
 `winfo_rootx()/rooty()` return the **outer** window top-left (including the OS
 titlebar) while `winfo_width()/winfo_height()` return the **client** size. The
@@ -234,7 +256,7 @@ capture rect therefore includes the titlebar and clips a sliver off the bottom.
 you will read the window frame, not the app. Sample inside a known widget
 (`widget.winfo_rootx/y` + size) instead.
 
-### 7.4 Responsive captures
+### 7.5 Responsive captures
 
 Use `tools/screenshots.py` for an ad-hoc page/theme/viewport matrix. Direct
 scratch output to an ignored directory:
@@ -253,16 +275,15 @@ python -m unittest discover -s tools/tests -p "*.py"
 - Tests live with the developer tooling under `tools/tests/`. Run them from
   the repository root; use the command output as the source of truth for the
   current test count.
-- **Known Windows flake:** a run may end with `PermissionError: [WinError 32]`
-  while `tearDown` deletes a temp `llama_router.db`. It is a file-lock race in
-  cleanup, not a product failure — re-run to confirm before investigating.
 - **Known unrelated noise:** `test_phase4` spawns the bundled `llama-server`
   binary which may print `Unknown option: --models-preset` / exit rc=2 on this
   host. That is an environment/runtime-binary issue, **not** caused by UI
   changes. Don't try to "fix" it as part of UI work.
 - `pytest` is **not** installed and not used. Use `unittest`.
-- After UI changes, at minimum: `python -m py_compile llama_router/ui/*.py
-  llama_router/ui/pages/*.py` and run the test suite.
+- After UI changes, at minimum: `tools\dev.bat compile` and
+  `tools\dev.bat tests`.
+- For Tcl/Tk, tracemalloc, warnings, and the complete resource check, use
+  `tools\dev.bat tests-resources`.
 
 ---
 
@@ -298,24 +319,25 @@ python -m unittest discover -s tools/tests -p "*.py"
 regenerate them.
 
 ```bat
-py -3 -m py_compile llama_router/ui/*.py llama_router/ui/pages/*.py
-py -3 tools/screenshots.py
+tools\dev.bat compile
+tools\dev.bat screenshots
 ```
 
-With no arguments the tool writes exactly the committed set:
+The static review set is:
 
 `page_dashboard.png` · `page_playground.png` · `page_profiles.png` ·
-`page_runtime.png` · `page_settings.png` (Forge) ·
+`page_runtime.png` · `page_settings.png` (Midnight) ·
 `settings_midnight.png` · `settings_light.png` ·
 `final_dashboard.png`
 
+The PNGs are review artifacts. The README embeds `app_demo.gif` and links to
+`app_demo.mp4`; regenerate both with `tools\dev.bat video`.
+
 Then:
 
-1. Check every README link still resolves — paths are `llama_router/assets/screenshots/<name>.png`
-   with no leading slash: `grep "screenshots" README.md`.
+1. Check the README demo links resolve: `app_demo.gif` and `app_demo.mp4`.
 2. If you added or renamed a page, update `README_PAGES` in
-   `tools/screenshots.py`, the `llama_router/assets/screenshots/` directory and the README links
-   together.
+   `tools/screenshots.py` and the static review set together.
 3. Commit `README.md` and `llama_router/assets/screenshots/*.png` in the same commit as the UI
    change. `tools/screenshots.py` is a committed tool — do **not** delete it.
 

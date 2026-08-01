@@ -1,17 +1,19 @@
-"""Compare page construction, navigation, and first-idle timings.
+"""Compare page construction, navigation, and settled Tk timings.
 
 Run from the repository root with the tool-local Python environment:
 
     tools/.venv/Scripts/python tools/benchmark_ui.py
 
-The benchmark is deliberately a script rather than a test.  It uses the UI
-test factory, creates a fresh temporary database for every sample, and keeps
+The benchmark is deliberately a script rather than a test.  It starts a fresh
+worker process for every sample, creates a temporary database there, and keeps
 the reported numbers descriptive instead of enforcing timing thresholds.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import statistics
+import subprocess
 import sys
 import tempfile
 import time
@@ -82,18 +84,78 @@ def _prepare_scenario(app, scenario: str) -> None:
             {key: is_open for key in _SETTINGS_CARDS})
 
 
-def _settle(app) -> None:
-    """Drain Tk idle/layout work; benchmark-only, never used by App itself."""
-    app.root.update_idletasks()
-    app.root.update()
+def _settle(app) -> float:
+    """Drain two fixed Tk rounds; benchmark-only, never used by App itself."""
+    started = time.perf_counter()
+    for _ in range(2):
+        app.root.update_idletasks()
+        app.root.update()
+    return (time.perf_counter() - started) * 1000
+
+
+def _build_and_settle(base: Path, geometry: str) -> tuple:
+    """Build the shell, then measure its complete startup separately."""
+    started = time.perf_counter()
+    app, logs = TestAppLayout._build_app(base, geometry=geometry)
+    app_build_ms = (time.perf_counter() - started) * 1000
+    app._cancel_prewarm()
+    _settle(app)
+    startup_settled_ms = (time.perf_counter() - started) * 1000
+    return app, logs, {
+        "app_build_ms": app_build_ms,
+        "startup_settled_ms": startup_settled_ms,
+    }
 
 
 def _timings(app, page: str) -> dict[str, float]:
+    construct = getattr(app, "_page_construct_ms", None)
+    if construct is None:
+        construct = getattr(app, "_page_build_ms", {})
+    on_show = getattr(app, "_page_on_show_ms", {})
+    navigation_idle = getattr(app, "_page_navigation_idle_ms", None)
+    if navigation_idle is None:
+        navigation_idle = getattr(app, "_page_first_idle_ms", {})
     return {
-        "construct_ms": app._page_construct_ms.get(page, 0.0),
-        "on_show_ms": app._page_on_show_ms.get(page, 0.0),
-        "first_idle_ms": app._page_first_idle_ms.get(page, 0.0),
+        "construct_ms": construct.get(page, 0.0),
+        "on_show_ms": on_show.get(page, 0.0),
+        "navigation_idle_ms": navigation_idle.get(page, 0.0),
     }
+
+
+def _navigate_and_settle(app, page: str) -> dict[str, float]:
+    started = time.perf_counter()
+    app.show_page(page)
+    show_call_ms = (time.perf_counter() - started) * 1000
+    app._cancel_prewarm()
+    _settle(app)
+    settled_ms = (time.perf_counter() - started) * 1000
+    return {"show_call_ms": show_call_ms, "settled_ms": settled_ms}
+
+
+def _first_measurement(app, page: str,
+                       startup: dict[str, float]) -> dict[str, float]:
+    if page == "dashboard" and app._active == "dashboard":
+        # Dashboard was built by App.__init__; do not turn a no-op navigation
+        # into a misleading first-load metric.
+        return {**startup, **_timings(app, page)}
+    if page != "dashboard" and page in app._pages:
+        raise RuntimeError(f"first-load target already exists: {page}")
+    navigation = _navigate_and_settle(app, page)
+    return {**startup, **navigation, **_timings(app, page)}
+
+
+def _repeated_measurements(app, page: str, other: str,
+                           repeats: int) -> list[dict[str, float]]:
+    if app._active != other:
+        _navigate_and_settle(app, other)
+    repeated = []
+    for _ in range(repeats):
+        if app._active != other:
+            _navigate_and_settle(app, other)
+        navigation = _navigate_and_settle(app, page)
+        repeated.append({**navigation, **_timings(app, page)})
+        _navigate_and_settle(app, other)
+    return repeated
 
 
 def _close(app, logs) -> None:
@@ -121,43 +183,18 @@ def _run_case(scenario: str, page: str, size: tuple[int, int],
               repeats: int) -> tuple[dict[str, float], list[dict[str, float]]]:
     width, height = size
     with tempfile.TemporaryDirectory(prefix="llama-router-bench-") as td:
-        app, logs = TestAppLayout._build_app(
+        app, logs, startup = _build_and_settle(
             Path(td), geometry=f"{width}x{height}")
         try:
-            app._cancel_prewarm()
             _prepare_scenario(app, scenario)
             app.ctx.events.drain()
-
-            # Dashboard is the shell's initial page. Logs need one explicit
-            # round trip so the 500-line workload is measured by on_show.
-            if app._active != page:
-                app.show_page(page)
             app._cancel_prewarm()
             _settle(app)
-            first = _timings(app, page)
+
+            first = _first_measurement(app, page, startup)
 
             other = "dashboard" if page != "dashboard" else "playground"
-            if app._active != other:
-                app.show_page(other)
-                app._cancel_prewarm()
-                _settle(app)
-
-            repeated = []
-            for _ in range(repeats):
-                if app._active != other:
-                    app.show_page(other)
-                    app._cancel_prewarm()
-                    _settle(app)
-                started = time.perf_counter()
-                app.show_page(page)
-                show_ms = (time.perf_counter() - started) * 1000
-                app._cancel_prewarm()
-                _settle(app)
-                repeated.append({"show_call_ms": show_ms,
-                                 **_timings(app, page)})
-                app.show_page(other)
-                app._cancel_prewarm()
-                _settle(app)
+            repeated = _repeated_measurements(app, page, other, repeats)
             return first, repeated
         finally:
             _close(app, logs)
@@ -168,6 +205,27 @@ def _record(results: dict[tuple, list[float]], scenario: str,
             timings: dict[str, float]) -> None:
     for metric, value in timings.items():
         results[(scenario, size, page, phase, metric)].append(value)
+
+
+def _run_fresh_sample(scenario: str, page: str, size: tuple[int, int],
+                      repeats: int) -> tuple[dict[str, float],
+                                              list[dict[str, float]]]:
+    """Run one sample in a fresh interpreter to avoid cross-sample state."""
+    width, height = size
+    command = [sys.executable, str(Path(__file__).resolve()), "--worker",
+               scenario, page, str(width), str(height), str(repeats)]
+    completed = subprocess.run(command, cwd=ROOT, text=True,
+                               capture_output=True, timeout=120)
+    if completed.returncode:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise RuntimeError(
+            f"benchmark worker failed ({completed.returncode}): {detail}")
+    try:
+        payload = json.loads(completed.stdout.strip())
+        return payload["first"], payload["repeated"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise RuntimeError(
+            f"benchmark worker returned invalid JSON: {completed.stdout!r}") from exc
 
 
 def _report(results: dict[tuple, list[float]]) -> None:
@@ -183,10 +241,29 @@ def _report(results: dict[tuple, list[float]]) -> None:
               f"{max(values):7.2f} {len(values):2d}")
 
 
+def _run_worker(argv: list[str]) -> int:
+    if len(argv) != 5:
+        print("benchmark worker expects SCENARIO PAGE WIDTH HEIGHT REPEATS",
+              file=sys.stderr)
+        return 2
+    scenario, page, width, height, repeats = argv
+    try:
+        first, repeated = _run_case(
+            scenario, page, (int(width), int(height)), int(repeats))
+    except Exception as exc:
+        print(f"benchmark worker failed: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps({"first": first, "repeated": repeated}))
+    return 0
+
+
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--worker":
+        return _run_worker(sys.argv[2:])
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--samples", type=int, default=5,
-                        help="fresh-app samples per case (default: 5)")
+                        help="fresh-process samples per case (default: 5)")
     parser.add_argument("--repeats", type=int, default=3,
                         help="cached navigations per sample (default: 3)")
     parser.add_argument("--sizes", nargs="+", type=_parse_size,
@@ -206,7 +283,7 @@ def main() -> int:
         for size in args.sizes:
             for page in SCENARIO_PAGES[scenario]:
                 for _ in range(args.samples):
-                    first, repeated = _run_case(
+                    first, repeated = _run_fresh_sample(
                         scenario, page, size, args.repeats)
                     _record(results, scenario, size, page, "first", first)
                     for timings in repeated:
