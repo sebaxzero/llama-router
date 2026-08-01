@@ -402,7 +402,7 @@ class SettingsPage(Page):
         return entry
 
     def _layout_api_actions(self) -> None:
-        if not hasattr(self, "_api_wrap"):
+        if not self._server_built:
             return
         compact = (bool(self._server_compact)
                    or self._api_wrap.winfo_width() < _API_ACTIONS_COMPACT_WIDTH)
@@ -449,7 +449,7 @@ class SettingsPage(Page):
 
     def _apply_api_details_visibility(self) -> None:
         """Apply the persisted API-details preference to the key field."""
-        if not hasattr(self, "_api_key"):
+        if not self._server_built:
             return
         self._current_api_key()
         self._api_key_visible = self._show_api_details.get()

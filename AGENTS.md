@@ -175,7 +175,7 @@ not.
 | --- | --- |
 | `tools/screenshots.py` | Captures README screenshots or page/theme/size matrices. |
 | `tools/benchmark_ui.py` | Measures page construction and settled Tk navigation. |
-| `tools/build.py` | One-file PyInstaller build (`--debug` keeps the console; `--keep-work` preserves scratch files). Cleans `build/` and `llama-router.spec` automatically. Needs `pip install pyinstaller`; per-OS, no cross-compiling. |
+| `tools/build.py` | One-file PyInstaller build (`--debug` keeps the console; pass `--debug` when launching the app to enable timings; `--keep-work` preserves scratch files). Cleans `build/` and `llama-router.spec` automatically. Needs `pip install pyinstaller`; per-OS, no cross-compiling. |
 | `tools/generate_icon.py` | Regenerates `app_icon.png` and multi-resolution `app_icon.ico` using Pillow. |
 
 ### 7.1 `tools/screenshots.py`

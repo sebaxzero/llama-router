@@ -44,7 +44,12 @@ launch.bat
 ./launch.sh
 ```
 
-Or invoke it directly with `py -3 main.py` on Windows or `python3 main.py` elsewhere. Then:
+Or invoke it directly with `py -3 main.py` on Windows or `python3 main.py`
+elsewhere. Page construction and load timings stay hidden by default; pass
+`--debug` when launching the app to enable them. Packaged diagnostics require
+the console build produced by `tools\dev.bat build-debug`.
+
+Then:
 
 1. Open **Runtime**, choose a prebuilt build appropriate for your hardware, and click **Install**. You can instead import an existing `llama-server` build.
 2. Open **Models**, add folders containing `.gguf` files, and click **Scan**.

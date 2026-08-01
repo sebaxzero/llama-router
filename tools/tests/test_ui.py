@@ -559,6 +559,37 @@ class TestAppLayout(_TkTest):
                     app._on_close()
                 logs.close()
 
+    def test_settings_reset_with_closed_server_ignores_destroyed_widgets(self) -> None:
+        errors = []
+        with tempfile.TemporaryDirectory() as td:
+            app, logs = self._build_app(Path(td))
+            app.root.report_callback_exception = lambda *error: errors.append(error)
+            app.ctx.collapsible_states["settings.server"] = True
+            try:
+                app.show_page("settings")
+                app._cancel_prewarm()
+                page = app._pages["settings"]
+                self.assertTrue(page._server_built)
+
+                page._server_card.set_open(False)
+                page._reset_server()
+                self.assertFalse(page._server_built)
+                self.assertFalse(page._server_card.is_open)
+
+                page._show_api_details.set(
+                    not page._show_api_details.get())
+                page._layout_api_actions()
+                app.root.update()
+                self.assertEqual(errors, [])
+
+                page._server_card.set_open(True)
+                self.assertTrue(page._server_built)
+                self.assertEqual(page._port.get(), "8080")
+            finally:
+                if app.root.winfo_exists():
+                    app._on_close()
+                logs.close()
+
     def test_dashboard_skips_unchanged_endpoint_and_command_render(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             app, logs = self._build_app(Path(td))

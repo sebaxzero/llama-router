@@ -133,7 +133,7 @@ set /p "SHOT_OUT=Carpeta de salida [tools\_scratch]: "
 exit /b %errorlevel%
 
 :video
-"%PYTHON_EXE%" %PYTHON_ARG% tools\screenshots.py --video --out _capture
+"%PYTHON_EXE%" %PYTHON_ARG% tools\screenshots.py --video
 exit /b %errorlevel%
 
 :icon
@@ -157,6 +157,7 @@ if not exist "tools\.venv\Scripts\python.exe" (
     "%SYSTEM_PYTHON_EXE%" %SYSTEM_PYTHON_ARG% -m venv tools\.venv
     if errorlevel 1 exit /b %errorlevel%
 )
+call :ensure_tcl_runtime
 "tools\.venv\Scripts\python.exe" -m pip install -r tools\requirements.txt pyinstaller
 if errorlevel 1 exit /b %errorlevel%
 set "PYTHON_EXE=%CD%\tools\.venv\Scripts\python.exe"
@@ -175,7 +176,7 @@ echo   tests-resources     Ejecutar tests con Tcl/Tk, tracemalloc y warnings
 echo   compile             Compilar las fuentes Python
 echo   screenshots         Regenerar las capturas del README
 echo   custom-screenshots  Abrir el asistente de capturas
-echo   video               Grabar el video y GIF en _capture
+echo   video               Regenerar el video y GIF del README
 echo   benchmark           Medir construccion y navegacion de la UI
 echo   icon                Regenerar los iconos de la aplicacion
 echo   build               Crear el ejecutable release
@@ -187,19 +188,44 @@ exit /b 0
 :find_system_python
 set "SYSTEM_PYTHON_EXE="
 set "SYSTEM_PYTHON_ARG="
-where py >nul 2>&1
-if not errorlevel 1 (
-    set "SYSTEM_PYTHON_EXE=py"
-    set "SYSTEM_PYTHON_ARG=-3"
-    exit /b 0
+rem Prefer the user's real Python installation over Codex/WindowsApps aliases.
+for /d %%D in ("%LOCALAPPDATA%\Python\pythoncore-*") do (
+    if not defined SYSTEM_PYTHON_EXE if exist "%%~fD\python.exe" (
+        set "SYSTEM_PYTHON_EXE=%%~fD\python.exe"
+        set "SYSTEM_PYTHON_ARG="
+    )
 )
+if defined SYSTEM_PYTHON_EXE exit /b 0
+
 where python >nul 2>&1
 if not errorlevel 1 (
     set "SYSTEM_PYTHON_EXE=python"
     set "SYSTEM_PYTHON_ARG="
     exit /b 0
 )
+
+where py >nul 2>&1
+if not errorlevel 1 (
+    set "SYSTEM_PYTHON_EXE=py"
+    set "SYSTEM_PYTHON_ARG=-3"
+    exit /b 0
+)
 exit /b 1
+
+:ensure_tcl_runtime
+if not defined SYSTEM_PYTHON_EXE exit /b 0
+set "SYSTEM_PYTHON_HOME="
+for %%P in ("%SYSTEM_PYTHON_EXE%") do set "SYSTEM_PYTHON_HOME=%%~dpP"
+if not defined SYSTEM_PYTHON_HOME exit /b 0
+if not exist "%SYSTEM_PYTHON_HOME%tcl\tcl8.6\init.tcl" exit /b 0
+if not exist "tools\.venv\tcl\tcl8.6\init.tcl" (
+    xcopy /E /I /Y "%SYSTEM_PYTHON_HOME%tcl\tcl8.6" "tools\.venv\tcl\tcl8.6\" >nul
+)
+if not exist "%SYSTEM_PYTHON_HOME%tcl\tk8.6\tk.tcl" exit /b 0
+if not exist "tools\.venv\tcl\tk8.6\tk.tcl" (
+    xcopy /E /I /Y "%SYSTEM_PYTHON_HOME%tcl\tk8.6" "tools\.venv\tcl\tk8.6\" >nul
+)
+exit /b 0
 
 :select_python
 set "PYTHON_EXE=%SYSTEM_PYTHON_EXE%"

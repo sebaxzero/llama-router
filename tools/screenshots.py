@@ -17,7 +17,7 @@ Usage (from the repository root):
     py -3 tools/screenshots.py --pages settings --themes light arctic
     py -3 tools/screenshots.py --pages dashboard --sizes 960x640 1280x860
     py -3 tools/screenshots.py --pages dashboard --out _scratch --keep-open
-    tools/.venv/Scripts/python tools/screenshots.py --video --out _capture
+    tools/.venv/Scripts/python tools/screenshots.py --video
 
 Install the dev-only capture dependencies in the tool-local virtual
 environment (never import them from `llama_router/`):
@@ -284,6 +284,43 @@ def _grab_client(app, box=None):
     return ImageGrab.grab(bbox=box or _client_box(app)).convert("RGB")
 
 
+def _park_pointer(app) -> tuple[int, int] | None:
+    """Move the real Windows pointer outside the captured client area."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class POINT(ctypes.Structure):
+        _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+
+    user32 = ctypes.windll.user32
+    previous = POINT()
+    if not user32.GetCursorPos(ctypes.byref(previous)):
+        return None
+    box = _client_box(app)
+    candidates = (
+        (0, 0),
+        (app.root.winfo_screenwidth() - 1,
+         app.root.winfo_screenheight() - 1),
+    )
+    target = next(
+        ((x, y) for x, y in candidates
+         if not (box[0] <= x < box[2] and box[1] <= y < box[3])),
+        candidates[-1],
+    )
+    if not user32.SetCursorPos(*target):
+        return None
+    return previous.x, previous.y
+
+
+def _restore_pointer(position: tuple[int, int] | None) -> None:
+    if position is None or sys.platform != "win32":
+        return
+    import ctypes
+    ctypes.windll.user32.SetCursorPos(*position)
+
+
 def _ease(value: float) -> float:
     """Cubic ease-in/out for camera and cursor motion."""
     value = max(0.0, min(1.0, value))
@@ -354,9 +391,13 @@ def _render_demo_frame(source, output_size: tuple[int, int],
 def make_shooter(app, out_dir: Path):
     def shot(filename: str, size: tuple[int, int] = DEFAULT_SIZE) -> None:
         _place_in_work_area(app, *size)
-        time.sleep(0.2)
-        _raise_window(app)
-        _grab_client(app).save(str(out_dir / filename))
+        pointer = _park_pointer(app)
+        try:
+            time.sleep(0.2)
+            _raise_window(app)
+            _grab_client(app).save(str(out_dir / filename))
+        finally:
+            _restore_pointer(pointer)
         print(f"saved {out_dir.name}/{filename}")
 
     return shot
@@ -459,6 +500,8 @@ class _DemoRecorder:
             command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE, creationflags=flags)
         assert self.encoder.stdin is not None
+        self._pointer = _park_pointer(app)
+        time.sleep(0.35)
 
     @property
     def center(self) -> tuple[float, float]:
@@ -542,15 +585,23 @@ class _DemoRecorder:
         return bool(predicate())
 
     def finish(self) -> None:
-        self.encoder.stdin.close()
-        error = self.encoder.stderr.read().decode("utf-8", "replace").strip()
-        if self.encoder.wait() != 0:
-            raise RuntimeError(error or "FFmpeg failed to encode the video")
+        try:
+            self.encoder.stdin.close()
+            error = self.encoder.stderr.read().decode("utf-8", "replace").strip()
+            if self.encoder.wait() != 0:
+                raise RuntimeError(error or "FFmpeg failed to encode the video")
+        finally:
+            _restore_pointer(self._pointer)
+            self._pointer = None
 
     def abort(self) -> None:
-        if self.encoder.poll() is None:
-            self.encoder.kill()
-            self.encoder.wait()
+        try:
+            if self.encoder.poll() is None:
+                self.encoder.kill()
+                self.encoder.wait()
+        finally:
+            _restore_pointer(self._pointer)
+            self._pointer = None
 
 
 def _make_demo_gif(ffmpeg: str, video: Path, output: Path) -> None:
@@ -579,9 +630,9 @@ def record_demo(app, output: Path, ffmpeg: str,
     dashboard._scroll.scroll_to_start()
     _maximize_window(app)
     recorder = _DemoRecorder(app, output, ffmpeg, fps)
-    recorder.cursor = recorder.point(app._head_mark)
 
     try:
+        recorder.cursor = recorder.point(app._head_mark)
         recorder.hold(0.7)
         print("video: starting server")
         server = app.ctx.services["server"]

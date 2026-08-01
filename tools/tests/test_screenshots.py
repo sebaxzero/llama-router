@@ -175,6 +175,14 @@ class ScreenshotStateTests(unittest.TestCase):
         for link in links:
             self.assertTrue((screenshots.ROOT / link).is_file(), link)
 
+    def test_dev_video_writes_the_default_readme_assets(self):
+        runner = (screenshots.ROOT / "tools" / "dev.bat").read_text(
+            encoding="utf-8")
+        command = next(
+            line for line in runner.splitlines()
+            if "tools\\screenshots.py --video" in line)
+        self.assertNotIn("--out", command)
+
 
 if __name__ == "__main__":
     unittest.main()
