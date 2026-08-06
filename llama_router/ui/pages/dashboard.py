@@ -347,11 +347,25 @@ class DashboardPage(Page):
         return f"http://{host}:{port}"
 
     def _model_alias(self) -> str:
-        profiles = self.ctx.services.get("profiles")
-        if profiles:
-            active = [p for p in profiles.list() if p.active and p.route_alias]
-            if active:
-                return active[0].route_alias
+        # The preset is now the route registry.  Prefer the server's
+        # advertised model id once it is running, then fall back to the first
+        # route in the editable document.  This keeps client examples useful
+        # before startup without maintaining a second route-alias store.
+        server = self.ctx.services.get("server")
+        if server:
+            for model in getattr(server, "available_models", ()) or ():
+                if isinstance(model, dict):
+                    value = model.get("id") or model.get("name")
+                    if value:
+                        return str(value)
+        preset = self.ctx.services.get("preset")
+        if preset:
+            try:
+                routes = preset.snapshot.usable_routes
+            except (AttributeError, OSError):
+                routes = ()
+            if routes:
+                return routes[0].section
         return "your-model-alias"
 
     def _render_endpoints(self) -> None:
@@ -554,7 +568,7 @@ class DashboardPage(Page):
         steps = [
             (t("Download a runtime"), t("pick a llama.cpp build in Runtime"), "runtime"),
             (t("Add your models"), t("scan a folder with GGUF files"), "models"),
-            (t("Tune a profile"), t("context, GPU layers and route alias"), "profiles"),
+            (t("Edit the model preset"), t("routes, parameters and load policy"), "models"),
             (t("Start the server"), t("then point your client at the endpoint"), "dashboard"),
         ]
         for i, (title, desc, page) in enumerate(steps, 1):
@@ -740,7 +754,9 @@ class DashboardPage(Page):
         port = self.ctx.services["config"].get().server.port
         messages = {
             "no_runtime": t("No runtime installed — pick one on the Runtime page."),
-            "no_models": t("No enabled model has an active profile — check Models."),
+            "no_models": t("No usable route is defined in models-preset.ini — open Model Preset."),
+            "preset_failed": t("Could not read models-preset.ini — open Model Preset to repair it."),
+            "preset_invalid": t("models-preset.ini has errors — open Model Preset and fix the diagnostics."),
             "port_in_use": t("Port {port} is busy — stop the other process or change it in Settings.", port=port),
             "busy": t("The server is already changing state — wait a moment."),
         }

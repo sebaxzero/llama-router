@@ -1,312 +1,583 @@
-"""Generate the models-preset.ini consumed by llama-server --models-preset.
-
-Direct port of pi-test's models/preset.py — the generated INI must stay
-byte-compatible for the same app state.
-"""
+"""Lossless document tools for the user-owned models-preset.ini."""
 from __future__ import annotations
 
-import configparser
-import io
+import difflib
+import hashlib
+import os
+import re
+import ntpath
+import posixpath
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
-from llama_router.core.storage import write_text
-from llama_router.core.utils import sanitise
-from llama_router.schemas import ModelEntry, ModelState, Profile
+from llama_router.schemas import ModelEntry
 
 
-# Boolean CLI toggle flags — no "off" form exists on the llama.cpp side, so they
-# must only ever be written as "true" (via _write_conditional_params) and never
-# as "false" through the generic loop below.
-BOOLEAN_TOGGLE_KEYS = {
-    "swa-full", "no-kv-offload", "no-cache-prompt",
-    "no-mmproj-offload", "load-on-startup", "cpu-moe", "embedding",
+# ---------------------------------------------------------------------------
+# Lossless document model
+# ---------------------------------------------------------------------------
+
+_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+_HEADER_RE = re.compile(r"^[ \t]*\[(?P<name>[^\]]*)\][ \t]*(?:[;#].*)?$")
+_SOURCE_KEYS = {
+    "model": "local",
+    "m": "local",
+    "llama_arg_model": "local",
+    "model-url": "url",
+    "mu": "url",
+    "llama_arg_model_url": "url",
+    "hf": "hf",
+    "hfr": "hf",
+    "hf-repo": "hf",
+    "hf-file": "hf",
+    "hff": "hf",
+    "llama_arg_hf_repo": "hf",
+    "docker-repo": "docker",
+    "dr": "docker",
+    "llama_arg_docker_repo": "docker",
 }
-
-# Parameters that must never appear in the INI (they're CLI-only or handled
-# separately by the server launcher).
-_BLOCKED = {"host", "port", "api-key", "models-preset", "metrics",
-            "cont-batching", "no-cont-batching", "models-max", "parallel",
-            "threads", "cors", "log-disable",
-            "model", "load-on-startup",
-            # Written conditionally by _write_conditional_params
-            "no-mmproj-offload", "embedding",
-            "spec-type", "spec-draft-model", "spec-draft-n-max",
-            "spec-draft-n-min", "spec-draft-device", "spec-draft-ngl",
-            "cache-type-k-draft", "cache-type-v-draft",
-            # Performance: only when true
-            "mlock", "no-mmap", "cpu-moe",
-            # Performance: only when fit is active
-            "fit-target", "fit-ctx",
-            # Cache: only when true
-            "swa-full", "no-kv-offload", "no-cache-prompt",
-            # Chat template: only when set and jinja isn't off
-            "chat-template-file"}
-
-# Keys that should appear only in per-model profile sections, never in the
-# global [*] section. sleep-idle-seconds is set per-model in the UI.
-_PROFILE_ONLY_KEYS = {"sleep-idle-seconds"}
+_SOURCE_PATH_KEYS = {"model", "mmproj", "model-draft", "mmproj-file"}
 
 
-def _section_name(model: ModelEntry, profile: Profile, multi: bool) -> str:
-    """Return the INI section name for a model/profile pair.
+@dataclass(frozen=True)
+class TextEdit:
+    """A replacement against the normalized document view."""
 
-    If a model has only one active profile the section is just the route alias
-    (or sanitised model name); with multiple active profiles each gets its own
-    section: ``alias_ProfileName``.
-    """
-    alias = sanitise(profile.route_alias.strip()) or sanitise(model.name)
-    if multi:
-        return f"{alias}_{sanitise(profile.name)}"
-    return alias
+    start: int
+    end: int
+    replacement: str
 
 
-def section_conflicts(
-    models: list[ModelEntry],
-    profiles_by_model: dict[str, list[Profile]],
-) -> list[str]:
-    """Return duplicate active INI section names (case-insensitive)."""
-    seen: dict[str, str] = {}
-    conflicts: set[str] = set()
-    for model in models:
-        if not model.enabled or model.state != ModelState.VALID:
-            continue
-        active = [p for p in profiles_by_model.get(model.id, []) if p.active]
-        multi = len(active) > 1
-        for profile in active:
-            section = _section_name(model, profile, multi)
-            folded = section.casefold()
-            if folded in seen:
-                conflicts.add(section)
-            else:
-                seen[folded] = section
-    return sorted(conflicts, key=str.casefold)
+@dataclass(frozen=True)
+class PresetDiagnostic:
+    code: str
+    severity: str
+    message: str
+    start: int = 0
+    end: int = 0
+    blocks_save: bool = False
+    blocks_start: bool = False
+    section: str = ""
+    key: str = ""
 
 
-def _bool_str(v: Any) -> str:
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    return str(v)
+@dataclass(frozen=True)
+class PresetEntry:
+    key: str
+    value: str
+    section: str
+    line_start: int
+    line_end: int
+    value_start: int
+    value_end: int
+    raw_line: str
 
 
-def _is_true(v: Any) -> bool:
-    return v is True or str(v).lower() == "true"
+@dataclass(frozen=True)
+class PresetSection:
+    name: str
+    effective_name: str
+    start: int
+    end: int
+    header_start: int
+    header_end: int
+    entries: tuple[PresetEntry, ...] = ()
 
 
-def _write_legacy_load_mode(section_dict: dict, params: dict) -> None:
-    if "load-mode" in params:
-        if params["load-mode"] == "mmap+mlock":
-            section_dict["load-mode"] = "mlock"
-        return
-    locked = _is_true(params.get("mlock"))
-    no_mmap = _is_true(params.get("no-mmap"))
-    if locked:
-        section_dict["load-mode"] = "mlock"
-    elif no_mmap:
-        section_dict["load-mode"] = "none"
+@dataclass(frozen=True)
+class PresetRoute:
+    section: str
+    effective_section: str
+    source_key: str
+    source_value: str
+    source_kind: str
+    normalized_source: str
+    usable: bool
+    start: int
+    end: int
 
 
-def _write_conditional_params(section_dict: dict, params: dict) -> None:
-    """Write params that have conditional INI-write rules."""
-    # ── Multimodal ──────────────────────────────────────────────────────────
-    if _is_true(params.get("no-mmproj-offload")):
-        section_dict["no-mmproj-offload"] = "true"
-
-    # ── Speculative decoding ─────────────────────────────────────────────────
-    spec_type = str(params.get("spec-type") or "none")
-    if spec_type and spec_type != "none":
-        section_dict["spec-type"] = spec_type
-        draft_model = str(params.get("spec-draft-model") or "")
-        if draft_model:
-            section_dict["spec-draft-model"] = draft_model
-        n_max = params.get("spec-draft-n-max")
-        section_dict["spec-draft-n-max"] = str(int(n_max)) if n_max is not None else "3"
-        for key in ("spec-draft-n-min", "spec-draft-device", "spec-draft-ngl"):
-            value = params.get(key)
-            if value is not None and str(value).strip():
-                section_dict[key] = str(value)
-
-    for key in ("cache-type-k-draft", "cache-type-v-draft"):
-        val = str(params.get(key) or "")
-        if val and val != "f16":
-            section_dict[key] = val
-
-    # ── Performance ──────────────────────────────────────────────────────────
-    # Translate profiles saved before llama.cpp replaced these toggles.
-    _write_legacy_load_mode(section_dict, params)
-    if _is_true(params.get("cpu-moe")):
-        section_dict["cpu-moe"] = "true"
-
-    # fit-target: only when fit is not explicitly off (default = on)
-    fit_val = str(params.get("fit") or "on")
-    if fit_val != "off":
-        ft = params.get("fit-target")
-        if ft is not None and str(ft).strip():
-            section_dict["fit-target"] = str(int(float(str(ft))))
-        fc = params.get("fit-ctx")
-        if fc is not None and str(fc).strip():
-            section_dict["fit-ctx"] = str(int(float(str(fc))))
-
-    # ── Cache ────────────────────────────────────────────────────────────────
-    for key in ("swa-full", "no-kv-offload", "no-cache-prompt"):
-        if _is_true(params.get(key)):
-            section_dict[key] = "true"
-
-    # ── Chat template file ───────────────────────────────────────────────────
-    # llama-server requires --jinja for --chat-template-file; jinja defaults to
-    # on (empty value), so only skip when it's explicitly turned off.
-    tmpl_file = str(params.get("chat-template-file") or "").strip()
-    if tmpl_file and str(params.get("jinja") or "true").lower() != "false":
-        section_dict["chat-template-file"] = tmpl_file
-
-    # ── Router ───────────────────────────────────────────────────────────────
-    # load-on-startup: default false; models load on first request instead.
-    if _is_true(params.get("load-on-startup")):
-        section_dict["load-on-startup"] = "true"
-
-    # ── Embedding ────────────────────────────────────────────────────────────
-    if _is_true(params.get("embedding")):
-        section_dict["embedding"] = "true"
+def normalize_editor_text(text: str) -> str:
+    """Use LF in Tk while retaining the original text in the document."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def generate(
-    models: list[ModelEntry],
-    profiles_by_model: dict[str, list[Profile]],
-    global_params: dict[str, Any],
-) -> str:
-    """Return the full INI text for models-preset.ini."""
-    conflicts = section_conflicts(models, profiles_by_model)
-    if conflicts:
-        raise ValueError("Duplicate active route alias: " + ", ".join(conflicts))
-
-    cfg = configparser.RawConfigParser()
-    cfg.optionxform = str  # preserve key case
-
-    # [*] global defaults
-    cfg["*"] = {}
-    for k, v in global_params.items():
-        if k not in _BLOCKED and k not in _PROFILE_ONLY_KEYS:
-            cfg["*"][k] = _bool_str(v)
-    _write_legacy_load_mode(cfg["*"], global_params)
-
-    enabled = [m for m in models if m.enabled and m.state == ModelState.VALID]
-
-    for model in sorted(enabled, key=lambda m: m.name.lower()):
-        active_profiles = [p for p in profiles_by_model.get(model.id, []) if p.active]
-        if not active_profiles:
-            continue
-
-        multi = len(active_profiles) > 1
-
-        for profile in active_profiles:
-            section = _section_name(model, profile, multi)
-            cfg[section] = {"model": model.path}
-
-            for k, v in profile.params.items():
-                if k not in _BLOCKED:
-                    cfg[section][k] = _bool_str(v)
-
-            _write_conditional_params(cfg[section], profile.params)
-
-    buf = io.StringIO()
-    cfg.write(buf)
-    return buf.getvalue()
+def _line_ending(line: str) -> str:
+    if line.endswith("\r\n"):
+        return "\r\n"
+    if line.endswith(("\n", "\r")):
+        return line[-1]
+    return ""
 
 
-def parse_profile_params(
-    text: str,
-    models: list[ModelEntry],
-    profiles_by_model: dict[str, list[Profile]],
-) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
-    """Read editable INI values back into global and active profile params.
+def _without_eol(line: str) -> str:
+    return line[:-len(_line_ending(line))] if _line_ending(line) else line
 
-    Sections are matched with the same naming rule used by :func:`generate`.
-    Inactive profiles have no INI section and are intentionally left alone.
-    Deleting an option from a matched section therefore removes it from that
-    profile instead of allowing the database to restore it on the next regen.
-    """
-    cfg = configparser.RawConfigParser(strict=False)
-    cfg.optionxform = str
-    cfg.read_string(text)
 
-    global_params = dict(cfg.items("*")) if cfg.has_section("*") else {}
-    updates: dict[str, dict[str, str]] = {}
-    enabled = [m for m in models if m.enabled and m.state == ModelState.VALID]
-    for model in enabled:
-        active = [p for p in profiles_by_model.get(model.id, []) if p.active]
-        multi = len(active) > 1
-        for profile in active:
-            section = _section_name(model, profile, multi)
-            if not cfg.has_section(section):
+def _strip_inline_comment(value: str) -> str:
+    """Mirror llama.cpp's whitespace-before-comment rule."""
+    for i, ch in enumerate(value):
+        if ch in ";#" and i > 0 and value[i - 1].isspace():
+            return value[:i].rstrip()
+    return value.rstrip()
+
+
+def _effective_section(name: str) -> str:
+    """Apply llama.cpp's tag canonicalization for collision diagnostics."""
+    if name in ("", "*") or ":" not in name:
+        return name
+    prefix, tag = name.rsplit(":", 1)
+    if re.search(r"[-.]([A-Za-z0-9_]+)$", tag):
+        tag = re.sub(r"[-.]([A-Za-z0-9_]+)$", lambda m: m.group(1).upper(), tag)
+    else:
+        tag = tag.upper()
+    return f"{prefix}:{tag}"
+
+
+def _path_flavor(value: str) -> str:
+    if re.match(r"^[A-Za-z]:[\\/]", value) or value.startswith(("\\\\", "//")):
+        return "windows"
+    return "posix"
+
+
+def normalize_model_path(value: str, *, base: Path | None = None,
+                         flavor: str | None = None) -> str:
+    """Normalize local paths without asking Path.resolve to parse foreign paths."""
+    raw = value.strip()
+    flavor = flavor or ("windows" if _path_flavor(raw) == "windows" or
+                        (base is not None and
+                         _path_flavor(str(base)) == "windows") else "posix")
+    if flavor == "windows":
+        if base is not None and not ntpath.isabs(raw):
+            raw = ntpath.join(str(base), raw)
+        return ntpath.normcase(ntpath.normpath(raw.replace("/", "\\")))
+    p = Path(raw).expanduser()
+    if not p.is_absolute() and base is not None:
+        p = base / p
+    try:
+        p = p.resolve(strict=False)
+    except OSError:
+        p = Path(os.path.abspath(str(p)))
+    return posixpath.normpath(str(p)).replace("\\", "/")
+
+
+class PresetDocument:
+    """Parsed, editable view of a preset without a destructive serializer."""
+
+    def __init__(self, raw_text: str, *, runtime_cwd: Path | None = None,
+                 catalog: Any = None, registry: Iterable[ModelEntry] = ()):
+        self.raw_text = raw_text
+        self.text = normalize_editor_text(raw_text)
+        self.runtime_cwd = runtime_cwd
+        self.catalog = catalog
+        self.registry = tuple(registry)
+        self.sections: tuple[PresetSection, ...] = ()
+        self.entries: tuple[PresetEntry, ...] = ()
+        self.routes: tuple[PresetRoute, ...] = ()
+        self.diagnostics: tuple[PresetDiagnostic, ...] = ()
+        self._parse()
+
+    @classmethod
+    def parse(cls, text: str, *, runtime_cwd: Path | None = None,
+              catalog: Any = None,
+              registry: Iterable[ModelEntry] = ()) -> "PresetDocument":
+        return cls(text, runtime_cwd=runtime_cwd, catalog=catalog,
+                   registry=registry)
+
+    @property
+    def errors(self) -> tuple[PresetDiagnostic, ...]:
+        return tuple(d for d in self.diagnostics if d.severity == "error")
+
+    @property
+    def warnings(self) -> tuple[PresetDiagnostic, ...]:
+        return tuple(d for d in self.diagnostics if d.severity == "warning")
+
+    @property
+    def usable_routes(self) -> tuple[PresetRoute, ...]:
+        return tuple(r for r in self.routes if r.usable)
+
+    @property
+    def unique_sources(self) -> int:
+        # This is a configured-reference count, not a loadability count:
+        # stale local paths should still be visible in the status bar.  The
+        # separate ``usable_routes`` property remains the start gate.
+        return len({r.normalized_source for r in self.routes
+                    if r.source_value.strip()})
+
+    @property
+    def can_save(self) -> bool:
+        return not any(d.blocks_save for d in self.diagnostics)
+
+    @property
+    def can_start(self) -> bool:
+        return not any(d.blocks_start for d in self.diagnostics)
+
+    def _parse(self) -> None:
+        text = self.text
+        diagnostics: list[PresetDiagnostic] = []
+        entries: list[PresetEntry] = []
+        sections: list[PresetSection] = []
+        current_name = ""
+        current_header_start = 0
+        current_header_end = 0
+        current_entries: list[PresetEntry] = []
+        seen_sections: dict[str, PresetSection] = {}
+        seen_keys: dict[str, dict[str, PresetEntry]] = {}
+
+        def finish_section(end: int) -> None:
+            nonlocal current_entries
+            if not current_name and not current_entries:
+                current_entries = []
+                return
+            section = PresetSection(
+                current_name,
+                _effective_section(current_name),
+                current_header_start,
+                end,
+                current_header_start,
+                current_header_end,
+                tuple(current_entries),
+            )
+            sections.append(section)
+            current_entries = []
+
+        offset = 0
+        lines = text.splitlines(keepends=True)
+        if not lines and text:
+            lines = [text]
+        for line in lines:
+            body = _without_eol(line)
+            stripped = body.strip()
+            line_start = offset
+            line_end = offset + len(line)
+            if not stripped or stripped.startswith(("#", ";")):
+                offset = line_end
                 continue
-            updates[profile.id] = {
-                key: value for key, value in cfg.items(section)
-                if key != "model"
-            }
-    return global_params, updates
 
+            header = _HEADER_RE.match(body)
+            if header:
+                finish_section(line_start)
+                current_name = header.group("name").strip(" \t")
+                current_header_start = line_start
+                current_header_end = line_end
+                effective = _effective_section(current_name)
+                if current_name in seen_sections:
+                    diagnostics.append(PresetDiagnostic(
+                        "duplicate_section", "error",
+                        f"Duplicate section [{current_name}]; llama-server keeps the last one.",
+                        line_start, line_end, True, True, current_name))
+                elif effective in {s.effective_name for s in sections}:
+                    diagnostics.append(PresetDiagnostic(
+                        "duplicate_effective_section", "error",
+                        f"Section [{current_name}] collides with canonical section [{effective}].",
+                        line_start, line_end, True, True, current_name))
+                seen_sections.setdefault(current_name, PresetSection(
+                    current_name, effective, line_start, line_end,
+                    line_start, line_end, ()))
+                offset = line_end
+                continue
 
-def _model_key_value(stripped: str) -> str | None:
-    """Value of a ``model = path`` / ``model: path`` line (input pre-stripped).
+            # The runtime grammar requires an identifier and '='.
+            eq = body.find("=")
+            if eq > 0:
+                key = body[:eq].strip(" \t")
+                if _KEY_RE.match(key):
+                    value_start_rel = eq + 1
+                    while value_start_rel < len(body) and body[value_start_rel] in " \t":
+                        value_start_rel += 1
+                    raw_value = body[value_start_rel:]
+                    value = _strip_inline_comment(raw_value)
+                    value_start = line_start + value_start_rel
+                    value_end = value_start + len(value)
+                    entry = PresetEntry(key, value, current_name, line_start,
+                                        line_end, value_start, value_end, line)
+                    entries.append(entry)
+                    current_entries.append(entry)
+                    section_keys = seen_keys.setdefault(current_name, {})
+                    if key in section_keys:
+                        diagnostics.append(PresetDiagnostic(
+                            "duplicate_key", "warning",
+                            f"Duplicate key '{key}'; llama-server keeps the last value.",
+                            line_start, line_end, False, False,
+                            current_name, key))
+                    section_keys[key] = entry
+                    offset = line_end
+                    continue
 
-    Plain string parsing on purpose — any regex over this user-editable text
-    kept tripping CodeQL's polynomial-ReDoS check.
-    """
-    if not stripped.startswith("model"):
+            diagnostics.append(PresetDiagnostic(
+                "syntax", "error", "Invalid INI line; expected a section, comment or key = value.",
+                line_start, line_end, True, True, current_name))
+            offset = line_end
+
+        finish_section(len(text))
+        self.sections = tuple(sections)
+        self.entries = tuple(entries)
+
+        # Validate values only when a runtime catalogue knows the option.  A
+        # missing/unknown option is intentionally left editable: a newer
+        # llama.cpp build may introduce it before the bundled catalogue knows
+        # about it.
+        if self.catalog is not None and hasattr(self.catalog, "get"):
+            valid_bool = {"true", "false", "on", "off", "yes", "no",
+                          "enabled", "disabled", "1", "0"}
+            for entry in entries:
+                spec = self.catalog.get(entry.key)
+                if spec is None:
+                    continue
+                scope = "global" if entry.section in ("", "*") else "model"
+                if scope not in spec.scopes:
+                    diagnostics.append(PresetDiagnostic(
+                        "parameter_scope", "warning",
+                        f"Parameter '{entry.key}' is not valid in {scope} scope.",
+                        entry.line_start, entry.line_end, False, False,
+                        entry.section, entry.key))
+                if spec.router_controlled:
+                    diagnostics.append(PresetDiagnostic(
+                        "router_controlled", "warning",
+                        f"Parameter '{entry.key}' is managed by router Settings and may be ignored.",
+                        entry.line_start, entry.line_end, False, False,
+                        entry.section, entry.key))
+                value = entry.value.strip()
+                if not value:
+                    if spec.value_type in ("boolean", "integer", "float",
+                                           "choice", "path"):
+                        diagnostics.append(PresetDiagnostic(
+                            "invalid_value", "warning",
+                            f"Value for '{entry.key}' is empty.",
+                            entry.value_start, entry.value_end, False, False,
+                            entry.section, entry.key))
+                    continue
+                invalid = False
+                if spec.allowed_values:
+                    allowed = {str(x).casefold() for x in spec.allowed_values}
+                    invalid = value.casefold() not in allowed
+                elif spec.value_type == "boolean":
+                    invalid = value.casefold() not in valid_bool
+                elif spec.value_type == "integer":
+                    invalid = re.fullmatch(r"[+-]?\d+", value) is None
+                elif spec.value_type == "float":
+                    try:
+                        float(value)
+                    except ValueError:
+                        invalid = True
+                if invalid:
+                    diagnostics.append(PresetDiagnostic(
+                        "invalid_value", "warning",
+                        f"Value for '{entry.key}' is not a valid {spec.value_type}.",
+                        entry.value_start, entry.value_end, False, False,
+                        entry.section, entry.key))
+
+        # A canonical duplicate through aliases is less common than an exact
+        # duplicate.  Let a runtime catalog identify it when available.
+        if self.catalog is not None and hasattr(self.catalog, "canonical_name"):
+            by_section: dict[str, dict[str, PresetEntry]] = {}
+            for entry in entries:
+                canonical = self.catalog.canonical_name(entry.key) or entry.key
+                bucket = by_section.setdefault(entry.section, {})
+                if canonical in bucket and bucket[canonical].key != entry.key:
+                    diagnostics.append(PresetDiagnostic(
+                        "duplicate_parameter_alias", "warning",
+                        f"Keys '{bucket[canonical].key}' and '{entry.key}' refer to the same option.",
+                        entry.line_start, entry.line_end, False, False,
+                        entry.section, entry.key))
+                bucket[canonical] = entry
+
+        routes: list[PresetRoute] = []
+        for section in sections:
+            if section.name in ("", "*"):
+                continue
+            source_entry = next(
+                (e for e in reversed(section.entries)
+                 if e.key.casefold() in _SOURCE_KEYS), None)
+            if source_entry is None:
+                diagnostics.append(PresetDiagnostic(
+                    "missing_source", "error",
+                    f"Section [{section.name}] has no model, URL, HF or Docker source.",
+                    section.header_start, section.header_end, True, True,
+                    section.name))
+                continue
+            key = source_entry.key.casefold()
+            kind = _SOURCE_KEYS.get(key, "unknown")
+            value = source_entry.value.strip()
+            normalized = value
+            usable = bool(value)
+            if kind == "local":
+                normalized = normalize_model_path(value, base=self.runtime_cwd)
+                # A missing local path is a route warning; it becomes a start
+                # error only when no other usable route remains.
+                if (_path_flavor(value) != "windows" or os.name == "nt"):
+                    candidate = Path(value)
+                    if not candidate.is_absolute() and self.runtime_cwd is not None:
+                        candidate = self.runtime_cwd / candidate
+                    if not candidate.exists():
+                        usable = False
+                        diagnostics.append(PresetDiagnostic(
+                            "missing_path", "warning",
+                            f"Local model path does not exist: {value}",
+                            source_entry.value_start, source_entry.value_end,
+                            False, False, section.name, source_entry.key))
+            elif kind in ("hf", "docker", "url"):
+                normalized = value.casefold()
+            if not value:
+                usable = False
+            routes.append(PresetRoute(
+                section.name, section.effective_name, source_entry.key, value,
+                kind, normalized, usable, section.start, section.end))
+
+        # Relate local routes to the GGUF registry when one is available.  The
+        # registry remains advisory (remote routes and unknown files are still
+        # valid text), but the warning makes stale entries visible in the UI.
+        registry_paths = {
+            normalize_model_path(model.path, base=self.runtime_cwd)
+            for model in self.registry if getattr(model, "path", "")
+        }
+        if registry_paths:
+            for route in routes:
+                if route.source_kind == "local" and route.usable:
+                    if route.normalized_source not in registry_paths:
+                        diagnostics.append(PresetDiagnostic(
+                            "unregistered_model", "warning",
+                            f"Model path is not present in the GGUF registry: {route.source_value}",
+                            route.start, route.end, False, False, route.section,
+                            route.source_key))
+
+        by_source: dict[str, list[PresetRoute]] = {}
+        for route in routes:
+            # Report repeated references even when a local file is currently
+            # missing; the duplication is still actionable in the editor.
+            if route.source_value.strip():
+                by_source.setdefault(route.normalized_source, []).append(route)
+        for same_source in by_source.values():
+            if len(same_source) > 1:
+                names = ", ".join(f"[{route.section}]" for route in same_source)
+                for route in same_source:
+                    diagnostics.append(PresetDiagnostic(
+                        "duplicate_model_route", "warning",
+                        f"Multiple routes reference the same model: {names}.",
+                        route.start, route.end, False, False, route.section,
+                        route.source_key))
+
+        if not routes:
+            diagnostics.append(PresetDiagnostic(
+                "no_routes", "error", "The preset has no model sections.",
+                0, len(text), False, True))
+        elif not any(route.usable for route in routes):
+            diagnostics.append(PresetDiagnostic(
+                "no_usable_routes", "error", "The preset has no usable model routes.",
+                0, len(text), False, True))
+
+        self.routes = tuple(routes)
+        self.diagnostics = tuple(diagnostics)
+
+    def section_at_offset(self, offset: int) -> PresetSection | None:
+        for section in self.sections:
+            if section.start <= offset <= section.end:
+                return section
         return None
-    rest = stripped[len("model"):].lstrip()
-    if not rest.startswith(("=", ":")):
+
+    def entry_at_offset(self, offset: int) -> PresetEntry | None:
+        for entry in self.entries:
+            if entry.line_start <= offset <= entry.line_end:
+                return entry
         return None
-    value = rest[1:].strip()
-    return value or None
+
+    def add_model(self, section_name: str, model_path: str,
+                  companions: dict[str, str] | None = None) -> TextEdit:
+        block = f"[{section_name}]\nmodel = {model_path}\n"
+        for key, value in (companions or {}).items():
+            block += f"{key} = {value}\n"
+        if self.text and not self.text.endswith("\n"):
+            block = "\n" + block
+        elif self.text and not self.text.endswith("\n\n"):
+            block = "\n" + block
+        elif not self.text:
+            block = block
+        return TextEdit(len(self.text), len(self.text), block)
+
+    def add_parameter(self, section: str, key: str, value: str) -> TextEdit | None:
+        target = next((s for s in self.sections if s.name == section), None)
+        if target is None:
+            return None
+        wanted = (self.catalog.canonical_name(key)
+                  if self.catalog is not None and
+                  hasattr(self.catalog, "canonical_name") else None) or key
+        existing = [e for e in target.entries
+                    if ((self.catalog.canonical_name(e.key)
+                         if self.catalog is not None and
+                         hasattr(self.catalog, "canonical_name") else None)
+                        or e.key).casefold() == wanted.casefold()]
+        if existing:
+            return None
+        insert_at = target.end
+        line = f"{key} = {value}\n"
+        if target.entries:
+            last = target.entries[-1]
+            insert_at = last.line_end
+            if not _line_ending(last.raw_line):
+                line = "\n" + line
+        elif not _line_ending(self.text[target.header_start:target.header_end]):
+            line = "\n" + line
+        return TextEdit(insert_at, insert_at, line)
+
+    def remove_sections(self, names: Iterable[str]) -> list[TextEdit]:
+        wanted = set(names)
+        edits: list[TextEdit] = []
+        for section in self.sections:
+            if section.name in wanted:
+                # Keep comments/blank lines between this section and the next
+                # section intact; remove only the header and its actual keys.
+                end = section.entries[-1].line_end if section.entries \
+                    else section.header_end
+                edits.append(TextEdit(section.start, end, ""))
+        return edits
 
 
-def _norm_path(p: str) -> str:
-    # Always normalise both separators so Windows/Linux paths compare equal
-    # regardless of the host OS (the preset file may contain either style).
-    return p.replace("\\", "/").lower()
+def apply_edits(text: str, edits: Iterable[TextEdit]) -> str:
+    result = text
+    for edit in sorted(edits, key=lambda e: (e.start, e.end), reverse=True):
+        result = result[:edit.start] + edit.replacement + result[edit.end:]
+    return result
 
 
-def strip_disabled_sections(text: str, models: list[ModelEntry]) -> str:
-    """Drop INI sections whose ``model`` path belongs to a disabled model.
-
-    Applied when saving a hand-edited preset: the editor may hold content
-    fetched before a model was disabled, and a disabled model must never
-    survive in models-preset.ini. Works on the raw text so the user's
-    formatting and comments in the remaining sections are preserved.
-    """
-    disabled = {_norm_path(m.path) for m in models if not m.enabled}
-    if not disabled:
-        return text
-
+def merge_editor_text(base_raw: str, base_view: str, draft_view: str) -> str:
+    """Keep equal source lines byte-for-byte while saving manual edits."""
+    if normalize_editor_text(draft_view) == normalize_editor_text(base_view):
+        return base_raw
+    raw_lines = base_raw.splitlines(keepends=True)
+    base_lines = normalize_editor_text(base_view).splitlines()
+    draft_lines = normalize_editor_text(draft_view).splitlines()
+    matcher = difflib.SequenceMatcher(a=base_lines, b=draft_lines, autojunk=False)
+    if not raw_lines and not draft_lines:
+        return ""
+    dominant = "\r\n" if base_raw.count("\r\n") > base_raw.count("\n") / 2 else "\n"
     out: list[str] = []
-    block: list[str] = []
-    block_model: str | None = None
-
-    def flush() -> None:
-        nonlocal block, block_model
-        if block_model is None or block_model not in disabled:
-            out.extend(block)
-        block, block_model = [], None
-
-    for line in text.splitlines(keepends=True):
-        if line.lstrip().startswith("["):
-            flush()
-        block.append(line)
-        stripped = line.strip()
-        if not stripped.startswith(("#", ";")):
-            value = _model_key_value(stripped)
-            if value:
-                block_model = _norm_path(value)
-    flush()
-    return "".join(out)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            out.extend(raw_lines[i1:i2])
+            continue
+        if tag in ("replace", "insert"):
+            newline = dominant
+            if i1 < len(raw_lines):
+                newline = _line_ending(raw_lines[i1]) or newline
+            out.extend((line + newline) for line in draft_lines[j1:j2])
+        # delete emits no lines.
+    # splitlines() drops a final terminator; restore it when the draft has one.
+    draft_has_final = normalize_editor_text(draft_view).endswith("\n")
+    result = "".join(out)
+    if draft_has_final and result and not result.endswith(("\n", "\r")):
+        result += dominant
+    if not draft_has_final:
+        result = result.rstrip("\r\n")
+    return result
 
 
-def write_preset(
-    path: Path,
-    models: list[ModelEntry],
-    profiles_by_model: dict[str, list[Profile]],
-    global_params: dict[str, Any],
-) -> None:
-    text = generate(models, profiles_by_model, global_params)
-    write_text(path, text)
+def fingerprint_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def decode_preset_bytes(data: bytes) -> tuple[str, bool]:
+    bom = data.startswith(b"\xef\xbb\xbf")
+    if bom:
+        data = data[3:]
+    return data.decode("utf-8"), bom

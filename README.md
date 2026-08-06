@@ -17,8 +17,8 @@
 
 - **Install runtimes**, download prebuilt `llama-server` binaries (CUDA, Vulkan, CPU) or import one you already compiled.
 - **Find your models**, point it at folders with `.gguf` files and scan.
-- **Configure routes**, per-model context, GPU layers, sampling, speculative decoding, and server parameters in one workspace.
-- **Generate `models-preset.ini`**, stays in sync with your routes, consumed directly by `llama-server`.
+- **Edit `models-preset.ini`**, the lossless Model Preset workspace is the single source of truth for routes and model parameters.
+- **Keep a GGUF registry**, used for scanning, metadata and route suggestions without duplicating runtime configuration.
 - **Run the server**, start, stop, restart from the Dashboard with live logs and health checks.
 - **Watch the GPU**, VRAM and utilization while the server is up.
 - **Use the built-in playground**, chat with a running model, stream responses, attach files, copy code blocks, and retain local sessions.
@@ -52,12 +52,28 @@ the console build produced by `tools\dev.bat build-debug`.
 Then:
 
 1. Open **Runtime**, choose a prebuilt build appropriate for your hardware, and click **Install**. You can instead import an existing `llama-server` build.
-2. Open **Models**, add folders containing `.gguf` files, and click **Scan**.
-3. Enable a model and configure its route: context size, GPU layers, sampling, speculative decoding, and other `llama-server` options.
+2. Open **Model Preset**, scan or add folders containing `.gguf` files, and choose **Add model** for a route.
+3. Edit the route directly in `models-preset.ini`: context size, GPU layers, sampling, speculative decoding, and other `llama-server` options are offered from the active runtime catalogue.
 4. Open **Dashboard** and click **Start Server**.
 5. Connect an OpenAI-compatible client to `http://127.0.0.1:8080/v1`.
 
-The app regenerates `config/models-preset.ini` whenever the model registry, profiles, or global settings change. That file is passed to `llama-server` when it starts.
+The app never regenerates the preset from a hidden database. Every configured
+route, model source and inference parameter lives in
+`config/models-preset.ini`; the server and Playground read that file rather
+than a second model-configuration store. The SQLite GGUF registry is only a
+discovery index for file metadata, missing-file diagnostics and route
+suggestions. Saving creates a recoverable `.bak` and uses an external-change
+check so another editor cannot silently overwrite your work. If the server is
+already running, use **Apply to server** explicitly to request
+`GET /models?reload=1`; saving alone does not reload or restart models.
+
+`models-preset.ini` follows llama.cpp's named-section grammar. The `[*]`
+section contains global defaults; every other section is a route and must have
+one source such as `model`, `model-url`, `hf-repo`, or `docker-repo`. Local
+relative paths are resolved against the selected runtime directory. Duplicate
+sections and malformed lines are blocking diagnostics, while missing local
+files remain visible warnings so a preset can be repaired before the model is
+downloaded.
 
 ## Requirements
 
@@ -74,7 +90,7 @@ In source mode, Llama Router is portable: it creates these folders beside `main.
 
 | Path | Purpose |
 | --- | --- |
-| `config/` | SQLite configuration, API-key store, and generated `models-preset.ini` |
+| `config/` | SQLite configuration, API-key store, and user-owned `models-preset.ini` (plus recoverable backups) |
 | `models/` | Default location for models (you may also scan other folders) |
 | `runtime/` | Downloaded or imported `llama.cpp` runtimes |
 | `logs/` | Application and server logs |
@@ -84,7 +100,7 @@ Frozen builds ask where to store data the first time they run. Choosing the app 
 ## Troubleshooting
 
 - **Tkinter is missing on Linux:** install `python3-tk`, then run `python3 main.py` again.
-- **The server will not start:** check that a runtime is installed and active, at least one model is enabled, and the configured port is not in use. The Dashboard log explains startup failures.
+- **The server will not start:** check that a runtime is installed and active, `models-preset.ini` contains at least one usable route, and the configured port is not in use. The Dashboard log explains startup failures.
 - **A client cannot connect:** verify the Dashboard endpoint and use `/v1` for OpenAI-compatible clients. If an API key is enabled, provide it as a Bearer token.
 - **GPU acceleration is unavailable:** install/select a runtime matching your hardware and drivers, or use the CPU runtime.
 - **Another instance is already running:** only one application instance can use the same data folder. Close the existing instance before launching another.

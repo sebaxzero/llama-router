@@ -13,13 +13,12 @@ models/
 # Config (generated or local secrets)
 config/
 
-# Developer tools (sources are versioned)
-tools/.venv/
-tools/**/__pycache__/
-tools/**/*.pyc
-tools/_capture/
-tools/_scratch/
-tools/_responsive/
+# Any directory beginning with _ is scratch output and is never versioned.
+**/_*/
+
+# Local-only contributor notes and developer tooling stay outside this repository.
+/AGENTS.md
+/tools/
 
 # OS
 .DS_Store
@@ -35,7 +34,6 @@ dist/
 build/
 venv/
 .venv/
-_capture/
 
 # pi agent cache / installed extensions
 .pi/

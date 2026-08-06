@@ -95,22 +95,9 @@ class ModelEntry(_Base):
     path: str
     size: int = 0          # bytes
     state: ModelState = ModelState.VALID
-    enabled: bool = True
     added_at: str = ""
     # GGUF header metadata: arch, quant, params (size label), ctx (trained)
     meta: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class Profile(_Base):
-    id: str
-    name: str
-    model_id: str
-    active: bool = False
-    route_alias: str = ""   # used as the INI section name / API model name
-    params: dict[str, Any] = field(default_factory=dict)
-    created_at: str = ""
-    updated_at: str = ""
 
 
 @dataclass
@@ -176,15 +163,6 @@ class ServerSettings(_Base):
     stop_timeout: int = 10
     extra_args: str = ""
 
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "ServerSettings":
-        s: ServerSettings = super().from_dict(d)
-        # Configs saved before `expose` existed may carry a hand-set 0.0.0.0 —
-        # keep those users on the LAN instead of degrading them to loopback.
-        if "expose" not in d and s.host == "0.0.0.0":
-            s.expose = "lan"
-        return s
-
     def effective_host(self) -> str:
         return {"local": "127.0.0.1", "lan": "0.0.0.0"}.get(
             self.expose, self.host or "127.0.0.1"
@@ -207,9 +185,6 @@ class AppConfig(_Base):
 
     # Server
     server: ServerSettings = field(default_factory=ServerSettings)
-
-    # Global parameters applied to every model in the preset [*] section
-    global_params: dict[str, Any] = field(default_factory=dict)
 
     active_runtime_id: str | None = None
 

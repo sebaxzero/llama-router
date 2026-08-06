@@ -35,11 +35,11 @@ _CONNECT_TIMEOUT = 15.0
 
 
 class PlaygroundService:
-    def __init__(self, config, server, profiles, events: EventBus,
+    def __init__(self, config, server, preset, events: EventBus,
                  paths: PathManager) -> None:
         self._config = config
         self._server = server
-        self._profiles = profiles
+        self._preset = preset
         self._events = events
         self._paths = paths
         # Bumped on every send/cancel — a worker whose id no longer matches
@@ -52,13 +52,17 @@ class PlaygroundService:
     # ── Models ───────────────────────────────────────────────────────────────
 
     def models(self) -> list[str]:
-        """Route names the server can serve, newest health probe first."""
+        """Return server routes when live, otherwise saved preset sections."""
+        available = [m.get("id", "") for m in
+                     getattr(self._server, "available_models", []) or []
+                     if isinstance(m, dict) and m.get("id")]
+        if available:
+            return available
         loaded = [m for m in getattr(self._server, "_loaded_models", []) or [] if m]
         if loaded:
             return loaded
-        return sorted({p.route_alias or p.name
-                       for plist in self._profiles.by_model().values()
-                       for p in plist if p.active and (p.route_alias or p.name)})
+        snapshot = self._preset.snapshot
+        return [route.section for route in snapshot.usable_routes]
 
     # ── Streaming ────────────────────────────────────────────────────────────
 

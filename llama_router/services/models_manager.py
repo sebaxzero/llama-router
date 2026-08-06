@@ -1,6 +1,9 @@
-"""GGUF model registry — the ★ models-manager. Sync port of pi-test's
-ModelManager: folder scans classify files via the GGUF header so mmproj
-projectors and draft models never register as standalone models."""
+"""GGUF discovery index for the model-preset editor.
+
+The index describes files found on disk and supplies metadata for suggestions;
+it never decides which routes or parameters are configured.  That authority
+belongs exclusively to models-preset.ini.
+"""
 from __future__ import annotations
 
 import logging
@@ -151,19 +154,6 @@ class ModelsManager:
                 self._models[m.id] = m
                 new_count += 1
 
-        # Prune companion files (mmproj/draft) auto-added by older scans —
-        # their file still exists, so MISSING would be misleading.
-        stale = [
-            mid for mid, m in self._models.items()
-            if m.path not in found_paths
-            and Path(m.path).is_file()
-            and _gguf_kind(Path(m.path)) != "model"
-        ]
-        for mid in stale:
-            log.info("Dropping companion file from registry: %s",
-                     self._models[mid].path)
-            del self._models[mid]
-
         # Mark missing
         for m in self._models.values():
             if m.path not in found_paths:
@@ -182,27 +172,6 @@ class ModelsManager:
 
     def get(self, model_id: str) -> ModelEntry | None:
         return self._models.get(model_id)
-
-    def set_enabled(self, model_id: str, enabled: bool) -> ModelEntry:
-        m = self._require(model_id)
-        m.enabled = enabled
-        self._persist()
-        self._events.publish("model_updated", m.to_dict())
-        return m
-
-    def set_enabled_all(self, enabled: bool) -> int:
-        """Enable or disable every registered model in one persist."""
-        changed = 0
-        for m in self._models.values():
-            if m.enabled != enabled:
-                m.enabled = enabled
-                changed += 1
-        if changed:
-            self._persist()
-            self._events.publish("models_scanned", {
-                "total": len(self._models), "new": 0,
-            })
-        return changed
 
     def remove(self, model_id: str) -> None:
         """Drop the registry entry. Never touches the .gguf file on disk."""

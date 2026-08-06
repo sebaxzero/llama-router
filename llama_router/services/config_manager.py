@@ -38,11 +38,9 @@ class ConfigManager:
                 self.save()
             log.debug("Config loaded")
         stored_key = self._secrets.read()
-        if stored_key:
-            self._cfg.server.api_key = stored_key
-        elif self._cfg.server.api_key:
-            # One-time migration from older plaintext database records.
-            self.save()
+        # API keys live only in the platform-backed secret store.  A fresh
+        # test installation does not import plaintext values from old data.
+        self._cfg.server.api_key = stored_key or ""
 
     def save(self) -> None:
         self._secrets.write(self._cfg.server.api_key)

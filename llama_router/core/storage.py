@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -107,15 +108,47 @@ def db_write(db_path: Path, key: str, value: Any) -> None:
 
 def write_text(path: Path, text: str) -> None:
     """Atomically write plain text to *path* (used for .ini files)."""
+    atomic_write_bytes(path, text.encode("utf-8"))
+
+
+def atomic_write_bytes(path: Path, data: bytes, *, mode_from: Path | None = None) -> None:
+    """Atomically replace *path* with bytes, preserving the old file on error."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    tmp_path = Path(tmp)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-        os.replace(tmp, path)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        source = mode_from if mode_from is not None else path
+        try:
+            shutil.copymode(source, tmp_path)
+        except OSError:
+            pass
+        os.replace(tmp_path, path)
+        # Directory fsync is useful on POSIX; Windows does not support opening
+        # directories this way and the replace itself is still atomic there.
+        if os.name != "nt":
+            try:
+                dfd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dfd)
+                finally:
+                    os.close(dfd)
+            except OSError:
+                pass
     except Exception:
         try:
-            os.unlink(tmp)
+            tmp_path.unlink(missing_ok=True)
         except OSError:
             pass
         raise
+
+
+def backup_bytes(path: Path, backup: Path) -> None:
+    """Copy an existing file to a recoverable sibling atomically."""
+    if not path.exists():
+        return
+    data = path.read_bytes()
+    atomic_write_bytes(backup, data, mode_from=path)

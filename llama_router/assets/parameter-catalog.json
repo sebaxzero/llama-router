@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "source": "bundled",
+  "generated_at": "2026-08-02",
+  "source_version": "bundled local catalog",
+  "parameters": [
+    {"name":"model","aliases":["m"],"value_type":"path","scopes":["model"],"source_role":"primary_model","description":"Model path to load"},
+    {"name":"model-url","value_type":"string","scopes":["model"],"source_role":"primary_model","description":"Model download URL"},
+    {"name":"hf-repo","aliases":["hf","hfr"],"value_type":"string","scopes":["model"],"source_role":"primary_model","description":"Hugging Face model repository"},
+    {"name":"hf-file","aliases":["hff"],"value_type":"path","scopes":["model"],"source_role":"primary_model","description":"Hugging Face model file"},
+    {"name":"docker-repo","value_type":"string","scopes":["model"],"source_role":"primary_model","description":"Docker Hub model repository"},
+    {"name":"mmproj","value_type":"path","scopes":["model"],"source_role":"mmproj","description":"Multimodal projector path"},
+    {"name":"model-draft","value_type":"path","scopes":["model"],"source_role":"draft","description":"Draft model path"},
+    {"name":"ctx-size","aliases":["c"],"value_type":"integer","metavar":"N","description":"Size of the prompt context"},
+    {"name":"n-gpu-layers","aliases":["ngl"],"value_type":"integer","metavar":"N","description":"Number of layers to store in VRAM"},
+    {"name":"threads","aliases":["t"],"value_type":"integer","router_controlled":true,"description":"CPU threads"},
+    {"name":"batch-size","aliases":["b"],"value_type":"integer","metavar":"N","description":"Logical maximum batch size"},
+    {"name":"ubatch-size","aliases":["ub"],"value_type":"integer","metavar":"N","description":"Physical maximum batch size"},
+    {"name":"temp","value_type":"float","metavar":"N","description":"Temperature"},
+    {"name":"top-k","value_type":"integer","metavar":"N","description":"Top-k sampling"},
+    {"name":"top-p","value_type":"float","metavar":"N","description":"Top-p sampling"},
+    {"name":"min-p","value_type":"float","metavar":"N","description":"Min-p sampling"},
+    {"name":"jinja","value_type":"boolean","description":"Use the model's template"},
+    {"name":"load-on-startup","value_type":"boolean","scopes":["model"],"description":"Load this route at server startup"},
+    {"name":"stop-timeout","value_type":"integer","scopes":["model"],"description":"Seconds to wait before forcing unload"}
+  ]
+}

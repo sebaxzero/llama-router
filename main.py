@@ -139,7 +139,10 @@ def main() -> int:
 
     from llama_router.services.config_manager import ConfigManager
     from llama_router.services.models_manager import ModelsManager
-    from llama_router.services.profile_manager import ProfileManager
+    from llama_router.services.download_manager import DownloadManager
+    from llama_router.services.runtime_manager import RuntimeManager
+    from llama_router.services.preset_manager import PresetManager
+    from llama_router.services.parameter_catalog import ParameterCatalog
 
     services: dict = {}
     services["config"] = config = ConfigManager(paths, events)
@@ -148,65 +151,35 @@ def main() -> int:
 
     services["models"] = models = ModelsManager(paths, config, events)
     models.load()
-    services["profiles"] = profiles = ProfileManager(paths, models, events)
-    profiles.load()
-
-    # models-preset.ini is the project's source of truth: regenerate it on
-    # every mutation (model toggle, profile CRUD, config change) — pi-test's
-    # regen_preset behaviour. A bad profile must never crash the UI.
-    from llama_router.preset import write_preset
-
-    def _regen_preset(_data=None) -> None:
-        try:
-            write_preset(paths.preset_ini, models.list(), profiles.by_model(),
-                         config.get().global_params)
-        except Exception:
-            logging.getLogger(__name__).warning(
-                "Could not write models-preset.ini", exc_info=True)
-
-    def _on_models_scanned(data) -> None:
-        # New models from a scan need their default profiles before the
-        # preset can route them.
-        for m in models.list():
-            profiles.ensure_defaults(m.id)
-        _regen_preset()
-
-    for evt in ("model_updated", "model_removed", "profile_created",
-                "profile_updated", "profile_deleted", "profiles_reset"):
-        events.subscribe(evt, _regen_preset)
-    events.subscribe("models_scanned", _on_models_scanned)
-
-    last_global_params = dict(config.get().global_params)
-
-    def _on_config_saved(data) -> None:
-        """Only routing parameters affect models-preset.ini."""
-        nonlocal last_global_params
-        current = dict((data or {}).get("global_params", {}))
-        if current != last_global_params:
-            last_global_params = current
-            _regen_preset()
-
-    events.subscribe("config_saved", _on_config_saved)
-
-    for m in models.list():
-        profiles.ensure_defaults(m.id)
-    _regen_preset()
-
-    from llama_router.services.download_manager import DownloadManager
-    from llama_router.services.runtime_manager import RuntimeManager
     services["downloads"] = downloads = DownloadManager(paths, config, events)
     services["runtimes"] = runtimes = RuntimeManager(paths, config, downloads, events)
     runtimes.load()
     downloads.load()
 
+    services["preset"] = preset = PresetManager(
+        paths, models, events, runtimes=runtimes)
+    # The registry only refreshes diagnostics/suggestions.  It never writes
+    # routes or parameters; models-preset.ini is the runtime source of truth.
+    # Reparse it so status/context reflects newly missing or restored GGUF paths.
+    for event in ("models_scanned", "model_removed"):
+        events.subscribe(event, lambda _data, p=preset: p.load(
+            force=True, origin="registry"))
+    services["catalog"] = catalog = ParameterCatalog(paths, runtimes, events)
+    preset.set_catalog(catalog)
+    events.subscribe("parameter_catalog_changed", lambda _data, p=preset: p.load(
+        force=True, origin="catalog"))
+    events.subscribe("runtime_activated", lambda _data, c=catalog:
+                     c.refresh_runtime(background=True))
+    catalog.refresh_runtime(background=True)
+
     from llama_router.services.server_manager import ServerManager
     services["server"] = server = ServerManager(
-        config, runtimes, models, profiles, events, paths, logs)
+        config, runtimes, preset, events, paths, logs)
     server.reap_orphan()
 
     from llama_router.services.playground import PlaygroundService
     services["playground"] = PlaygroundService(
-        config, server, profiles, events, paths)
+        config, server, preset, events, paths)
 
     from llama_router.services.gpu_monitor import GpuMonitor
     services["gpu_monitor"] = gpu = GpuMonitor(events)

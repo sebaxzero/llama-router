@@ -35,11 +35,9 @@ from llama_router.core.events import EventBus
 from llama_router.core.logs import LogService, parse_binary_level
 from llama_router.core.paths import PathManager
 from llama_router.core.utils import port_in_use, strip_ansi
-from llama_router.preset import write_preset
+from llama_router.services.preset_manager import PresetManager
 from llama_router.schemas import ServerStatus
 from llama_router.services.config_manager import ConfigManager
-from llama_router.services.models_manager import ModelsManager
-from llama_router.services.profile_manager import ProfileManager
 from llama_router.services.runtime_manager import RuntimeManager
 
 log = logging.getLogger(__name__)
@@ -233,12 +231,11 @@ class _WindowsJob:
 
 class ServerManager:
     def __init__(self, config: ConfigManager, runtimes: RuntimeManager,
-                 models: ModelsManager, profiles: ProfileManager,
-                 events: EventBus, paths: PathManager, logs: LogService) -> None:
+                 preset: PresetManager, events: EventBus, paths: PathManager,
+                 logs: LogService) -> None:
         self._config = config
         self._runtimes = runtimes
-        self._models = models
-        self._profiles = profiles
+        self._preset = preset
         self._events = events
         self._paths = paths
         self._logs = logs
@@ -252,6 +249,8 @@ class ServerManager:
         self._start_time: float | None = None
         self._health_failures = 0
         self._loaded_models: list[str] = []
+        self._available_models: list[dict[str, Any]] = []
+        self._applied_preset_fingerprint: str | None = None
         self._active_host: str | None = None
         self._active_port: int | None = None
         self._active_api_key = False
@@ -319,9 +318,19 @@ class ServerManager:
             "status": self._status.value,
             "uptime": self.uptime,
             "models": self._loaded_models,
+            "available_models": self._available_models,
+            "preset_fingerprint": self._applied_preset_fingerprint,
             "pid": self._server_pid or (self._process.pid
                                          if self._process else None),
         }
+
+    @property
+    def available_models(self) -> list[dict[str, Any]]:
+        return list(self._available_models)
+
+    @property
+    def applied_preset_fingerprint(self) -> str | None:
+        return self._applied_preset_fingerprint
 
     def build_cmd_preview(self) -> list[str]:
         exe = self._runtimes.get_executable()
@@ -330,7 +339,8 @@ class ServerManager:
             # treat the preview as an iterable, so represent "no command" as
             # an empty list instead of leaking an optional value into startup.
             return []
-        return self._build_cmd(exe, self._paths.preset_ini, self._config.get())
+        preset_path = Path(getattr(self._preset, "path", self._paths.preset_ini))
+        return self._build_cmd(exe, preset_path, self._config.get())
 
     def start(self) -> dict[str, Any]:
         """Launch llama-server. Fast (no blocking waits) — callable from the
@@ -347,35 +357,38 @@ class ServerManager:
                         "error": "No valid runtime selected"}
 
             cfg = self._config.get()
-            preset = self._paths.preset_ini
-
-            profiles_by_model = self._profiles.by_model()
-            has_routes = any(
-                m.enabled and m.state == "valid"
-                and any(p.active for p in profiles_by_model.get(m.id, []))
-                for m in self._models.list())
-            if not has_routes:
-                return {"ok": False, "reason": "no_models",
-                        "error": "No enabled model has an active profile"}
-
-            try:
-                write_preset(preset, self._models.list(), profiles_by_model,
-                             cfg.global_params)
-            except Exception as e:
+            preset = self._preset.load(force=True, origin="server-check",
+                                       publish=False)
+            if not preset.readable:
                 return {"ok": False, "reason": "preset_failed",
-                        "error": f"Could not write models-preset.ini: {e}"}
+                        "error": "Could not read models-preset.ini"}
+            structural_errors = [d for d in preset.document.errors
+                                 if d.code not in ("no_routes", "no_usable_routes")]
+            if structural_errors:
+                detail = "; ".join(d.message for d in structural_errors[:3])
+                return {"ok": False, "reason": "preset_invalid",
+                        "error": detail}
+            if not preset.usable_routes:
+                return {"ok": False, "reason": "no_models",
+                        "error": "No usable route exists in models-preset.ini"}
 
             if port_in_use(cfg.server.effective_host(), cfg.server.port):
                 return {"ok": False, "reason": "port_in_use",
                         "error": f"Port {cfg.server.port} is already in use"}
 
-            cmd = self._build_cmd(exe, preset, cfg)
+            # Validation reads the snapshot; the child receives the actual
+            # path, never a serialized snapshot object.
+            preset_path = Path(getattr(self._preset, "path",
+                                       self._paths.preset_ini))
+            cmd = self._build_cmd(exe, preset_path, cfg)
             self._active_host = cfg.server.effective_host()
             self._active_port = cfg.server.port
             self._active_api_key = bool(cfg.server.api_key)
             self._set_status(ServerStatus.STARTING)
             self._health_failures = 0
             self._loaded_models = []
+            self._available_models = []
+            self._applied_preset_fingerprint = preset.fingerprint
             self._session += 1
             session = self._session
 
@@ -929,18 +942,62 @@ class ServerManager:
             time.sleep(_HEALTH_INTERVAL)
 
     def _fetch_loaded_models(self, base: str) -> None:
+        key = self._config.get().server.api_key
+        for endpoint in ("/models", "/v1/models"):
+            try:
+                req = urllib.request.Request(base + endpoint)
+                if key:
+                    req.add_header("Authorization", f"Bearer {key}")
+                with urllib.request.urlopen(req, timeout=_HEALTH_TIMEOUT) as r:
+                    if r.status != 200:
+                        continue
+                    data = json.loads(r.read().decode("utf-8"))
+                    models = data.get("data", [])
+                    if not isinstance(models, list):
+                        continue
+                    self._available_models = [
+                        m for m in models if isinstance(m, dict) and m.get("id")]
+                    self._loaded_models = [
+                        m["id"] for m in self._available_models
+                        if endpoint == "/v1/models" or
+                        (m.get("status") or {}).get("value") == "loaded"]
+                    return
+            except Exception:
+                continue
+
+    def reload_models(self) -> dict[str, Any]:
+        """Explicitly ask a running router to reload the saved preset."""
+        if not self.is_running():
+            return {"ok": False, "reason": "not_running"}
+        preset = self._preset.load(force=True, origin="server-reload-check",
+                                   publish=False)
+        if not preset.readable:
+            return {"ok": False, "reason": "preset_failed",
+                    "error": "Could not read models-preset.ini"}
+        if not preset.usable_routes:
+            return {"ok": False, "reason": "no_models",
+                    "error": "No usable route exists in models-preset.ini"}
+        if not preset.document.can_start:
+            return {"ok": False, "reason": "preset_invalid",
+                    "error": "; ".join(d.message
+                                        for d in preset.document.errors[:3])}
+        key = self._config.get().server.api_key
         try:
-            req = urllib.request.Request(f"{base}/v1/models")
-            key = self._config.get().server.api_key
+            req = urllib.request.Request(self.base_url() + "/models?reload=1")
             if key:
                 req.add_header("Authorization", f"Bearer {key}")
-            with urllib.request.urlopen(req, timeout=_HEALTH_TIMEOUT) as r:
-                if r.status == 200:
-                    data = json.loads(r.read().decode("utf-8"))
-                    self._loaded_models = [
-                        m.get("id", "") for m in data.get("data", [])]
-        except Exception:
-            pass
+            with urllib.request.urlopen(req, timeout=_HEALTH_TIMEOUT) as response:
+                if response.status not in (200, 201):
+                    return {"ok": False, "reason": "reload_failed",
+                            "error": f"HTTP {response.status}"}
+            self._fetch_loaded_models(self.base_url())
+            self._applied_preset_fingerprint = self._preset.load(
+                force=True, origin="server-reload", publish=False).fingerprint
+            self._events.publish("server_health", {
+                **self.get_status_dict(), "reloaded": True})
+            return {"ok": True, "models": self._available_models}
+        except Exception as exc:
+            return {"ok": False, "reason": "reload_failed", "error": str(exc)}
 
     def _atexit_kill(self) -> None:
         """Synchronous last-resort kill run by Python's atexit.

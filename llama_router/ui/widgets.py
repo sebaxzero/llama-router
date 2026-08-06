@@ -613,7 +613,7 @@ class ScrollFrame(tk.Frame):
         except (tk.TclError, KeyError):
             return
         while w is not None:
-            # ScrollFrames can be nested (the Profiles workspace contains a
+            # ScrollFrames can be nested (the model workspace contains a
             # scrollable editor).  The first one in the widget ancestry owns
             # this wheel event; letting an outer frame continue would move
             # both viewports for a single gesture.

@@ -10,7 +10,7 @@ import logging
 import time
 import tkinter as tk
 from dataclasses import dataclass, field
-from tkinter import font as tkfont, ttk
+from tkinter import font as tkfont, messagebox, ttk
 from typing import Any, Callable
 
 from llama_router import __version__
@@ -22,8 +22,8 @@ from llama_router.core.paths import asset_path
 from llama_router.core.windows import configure_app_identity
 from llama_router.ui import theme
 from llama_router.ui.pages.dashboard import DashboardPage
+from llama_router.ui.pages.model_preset import ModelPresetPage
 from llama_router.ui.pages.playground import PlaygroundPage
-from llama_router.ui.pages.profiles import ProfilesPage
 from llama_router.ui.pages.runtime import RuntimePage
 from llama_router.ui.pages.settings import SettingsPage
 from llama_router.ui.widgets import (AppMark, NavItem, ScrollFrame, StatusDot,
@@ -36,8 +36,7 @@ _PREWARM_START_MS = 400  # first page is already painted before hidden work
 _STATUS_CONTEXT_EVENTS = (
     "runtime_activated", "runtime_added", "runtime_deleted",
     "model_updated", "model_removed", "models_scanned",
-    "profile_created", "profile_updated", "profile_deleted",
-    "profiles_reset", "preset_imported",
+    "preset_changed", "parameter_catalog_changed",
 )
 
 log = logging.getLogger(__name__)
@@ -66,7 +65,7 @@ class AppContext:
 PAGES: dict[str, tuple[str, type]] = {
     "dashboard": ("Dashboard", DashboardPage),
     "playground": ("Playground", PlaygroundPage),
-    "profiles": ("Models", ProfilesPage),
+    "models": ("Model Preset", ModelPresetPage),
     "runtime": ("Runtime", RuntimePage),
     "settings": ("Settings", SettingsPage),
 }
@@ -814,8 +813,8 @@ class App:
     def _schedule_prewarm(self, delay: int = 200) -> None:
         self._cancel_prewarm()
         # Build lightweight pages from whichever tab restored at startup.
-        # Profiles stays demand-loaded because building its large Tk form on
-        # the UI thread is what made Playground briefly unresponsive.
+        # Model Preset stays demand-loaded so a large user-owned INI never
+        # blocks the first dashboard/Playground paint.
         priority = ("dashboard", "playground", "runtime", "settings")
         self._prewarm_queue = [key for key in priority
                                if key not in self._pages]
@@ -897,32 +896,18 @@ class App:
             self._tray.set_server_status(status)
 
     def _update_status_context(self, _data=None) -> None:
-        runtime_part = model_part = profile_part = ""
+        runtime_part = model_part = error_part = ""
         runtime = self.ctx.services["runtimes"].get_active()
         if runtime:
             runtime_part = f"{t('runtime')} · {runtime.backend.upper()}"
-
-        models = self.ctx.services["models"]
-        profiles = self.ctx.services["profiles"]
-        grouped = profiles.by_model()
-        available = []
-        for model in models.list():
-            active = [p for p in grouped.get(model.id, ()) if p.active]
-            if model.enabled and model.state != "missing" and active:
-                available.append((model, active))
-        if len(available) == 1:
-            model, active = available[0]
-            model_part = f"{t('model')} · {model.name}"
-            if len(active) == 1:
-                profile_part = f"{t('profile')} · {active[0].name}"
-            elif len(active) > 1:
-                profile_part = t("{count} active profiles", count=len(active))
-        elif len(available) > 1:
-            label = ("{count} models loaded"
-                     if getattr(self, "_last_server_status", "stopped") == "running"
-                     else "{count} models available")
-            model_part = t(label, count=len(available))
-        self._status_context_parts = [runtime_part, model_part, profile_part]
+        preset = self.ctx.services.get("preset")
+        if preset is not None:
+            snap = preset.snapshot
+            model_part = (f"{snap.route_count} {t('routes')} · "
+                          f"{snap.unique_model_count} {t('models')}")
+            if snap.errors:
+                error_part = t("{count} preset errors", count=len(snap.errors))
+        self._status_context_parts = [runtime_part, model_part, error_part]
         self._render_status_context()
 
     def _render_status_context(self) -> None:
@@ -935,8 +920,7 @@ class App:
             if width <= 1:
                 width = int(_DEFAULT_GEOMETRY.partition("x")[0])
             parts = list(getattr(self, "_status_context_parts", ()))
-            # Context order is runtime, model, profile. Profile is the first
-            # detail to disappear in a narrow status bar.
+            # Context order is runtime, routes/models and diagnostics.
             if width < 900 and len(parts) >= 3:
                 parts[2] = ""
             font = self._status_font
@@ -971,11 +955,6 @@ class App:
     # ── Navigation ───────────────────────────────────────────────────────────
 
     def show_page(self, key: str) -> None:
-        # Migrate the formerly standalone Preset page into Profiles.
-        if key in ("models", "preset"):
-            key = "profiles"
-        elif key == "server":
-            key = "dashboard"
         if key not in PAGES:
             key = "dashboard"
         if self._active == key:
@@ -1025,6 +1004,12 @@ class App:
         self._pump_id = None
         if self._closing:
             return
+        preset = self.ctx.services.get("preset")
+        if preset is not None:
+            try:
+                preset.poll_external()
+            except Exception:
+                log.debug("Preset external poll failed", exc_info=True)
         self.ctx.events.drain()
         self._pump_id = self.root.after(_DRAIN_MS, self._pump)
 
@@ -1091,6 +1076,20 @@ class App:
     def _on_close(self) -> None:
         if self._closing:
             return
+        page = self._pages.get(self._active) if self._active else None
+        if page is not None and getattr(page, "has_unsaved_changes", lambda: False)():
+            choice = messagebox.askyesnocancel(
+                t("Unsaved changes"),
+                t("Save changes to Model Preset before closing?"),
+                parent=self.root)
+            if choice is None:
+                return
+            if choice:
+                save = getattr(page, "_save", None)
+                if save:
+                    save()
+                if getattr(page, "has_unsaved_changes", lambda: False)():
+                    return
         self._closing = True
         self._cancel_idle_callbacks()
         self._cancel_prewarm()
